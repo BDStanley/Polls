@@ -2,18 +2,8 @@
 .Rhistory
 .RData
 .Ruserdata
-<<<<<<< HEAD
-National polls.R
-.Rhistory[Conflict 1]
-.Rhistory[Conflict]
-=======
->>>>>>> 1e653899cba538fee926b3aacf004e3314292562
 2019_elec_percentages.xlsx
-<<<<<<< HEAD
-=======
 GRED_Poland_2011_beta2.shp
->>>>>>> 55313f33c2f434c11c2ae708b2a25265097b0a7c
-.Rhistory[Conflict 2]
 Gminy.dbf
 Gminy.prj
 Gminy.shp
