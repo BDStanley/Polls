@@ -50,7 +50,11 @@ theme_plots <- function(base_size = 11, base_family = "Jost") {
   theme_bw(base_size, base_family) +
     theme(
       panel.background = element_rect(fill = "#ffffff", colour = NA),
-      title = element_text(size = rel(1), family = "Jost Medium", face = "plain"),
+      title = element_text(
+        size = rel(1),
+        family = "Jost Medium",
+        face = "plain"
+      ),
       plot.subtitle = element_text(
         size = rel(0.8),
         family = "Jost",
@@ -113,7 +117,11 @@ theme_plots_map <- function(base_size = 11, base_family = "Jost") {
       axis.text.y = element_blank(),
       strip.text.x = element_text(size = 10, family = "Jost", face = "plain"),
       legend.text = element_text(size = 9, family = "Jost", face = "plain"),
-      title = element_text(size = rel(1), family = "Jost Medium", face = "plain"),
+      title = element_text(
+        size = rel(1),
+        family = "Jost Medium",
+        face = "plain"
+      ),
       plot.subtitle = element_text(
         size = rel(0.8),
         family = "Jost",
@@ -555,7 +563,11 @@ house_effects_plot <- house_effects_data %>%
   ) +
   theme_plots() +
   theme(
-    strip.text = element_text(family = "Jost Medium", face = "plain", size = rel(1)),
+    strip.text = element_text(
+      family = "Jost Medium",
+      face = "plain",
+      size = rel(1)
+    ),
     panel.spacing = unit(1.5, "lines"),
     plot.margin = unit(c(1, 0.5, 0.5, 0.5), "cm")
   )
@@ -1708,5 +1720,5 @@ system("git add -A")
 system('git commit -m "Update $(date +"%Y-%m-%d %H:%M:%S")"')
 system("git push")
 system(
-  "rsync -av --include='*.png' --exclude='*' '/Users/benstanley/Positron/Polls/' '/Users/benstanley/Positron/BDStanley.github.io/PTP images/'"
+  "rsync -av --include='*.png' --exclude='*' '/Users/benstanley/Positron/Polls/' '/Users/benstanley/Positron/Website/PTP images/'"
 )
