@@ -265,34 +265,35 @@ cat("Running Bayesian model for Scenario 1...\n")
 # Run model for Scenario 1
 m_s1 <- brm(
   formula = bf(
-    outcome ~ 1 + s(time, k = 12, bs = "cs", m = 2) + (1 | pollster)
+    outcome ~ 1 + s(time, k = 8, bs = "cs", m = 2) + (1 | pollster)
   ),
   family = dirichlet(link = "logit", refcat = "Other"),
   prior = prior(normal(0, 1.5), class = "Intercept", dpar = "muPiS") +
-    prior(exponential(2), class = "sd", dpar = "muPiS") +
-    prior(exponential(2), class = "sds", dpar = "muPiS") +
+    prior(exponential(3), class = "sd", dpar = "muPiS") +
+    prior(exponential(3), class = "sds", dpar = "muPiS") +
     prior(normal(0, 1.5), class = "Intercept", dpar = "muKOplus") +
-    prior(exponential(2), class = "sd", dpar = "muKOplus") +
-    prior(exponential(2), class = "sds", dpar = "muKOplus") +
+    prior(exponential(3), class = "sd", dpar = "muKOplus") +
+    prior(exponential(3), class = "sds", dpar = "muKOplus") +
     prior(normal(0, 1.5), class = "Intercept", dpar = "muRazem") +
-    prior(exponential(2), class = "sd", dpar = "muRazem") +
-    prior(exponential(2), class = "sds", dpar = "muRazem") +
+    prior(exponential(3), class = "sd", dpar = "muRazem") +
+    prior(exponential(3), class = "sds", dpar = "muRazem") +
     prior(normal(0, 1.5), class = "Intercept", dpar = "muKonfederacja") +
-    prior(exponential(2), class = "sd", dpar = "muKonfederacja") +
-    prior(exponential(2), class = "sds", dpar = "muKonfederacja") +
+    prior(exponential(3), class = "sd", dpar = "muKonfederacja") +
+    prior(exponential(3), class = "sds", dpar = "muKonfederacja") +
     prior(normal(0, 1.5), class = "Intercept", dpar = "muKKP") +
-    prior(exponential(2), class = "sd", dpar = "muKKP") +
-    prior(exponential(2), class = "sds", dpar = "muKKP") +
-    prior(gamma(1, 0.01), class = "phi"),
+    prior(exponential(3), class = "sd", dpar = "muKKP") +
+    prior(exponential(3), class = "sds", dpar = "muKKP") +
+    prior(gamma(2, 0.1), class = "phi"),
   data = polls_s1,
   seed = 780045,
-  iter = 2000,
+  iter = 3000,
+  warmup = 2000,
   backend = "cmdstanr",
   threads = threading(threads_per_chain),
   chains = n_chains,
   cores = n_chains,
   refresh = 5,
-  control = list(adapt_delta = .95, max_treedepth = 15)
+  control = list(adapt_delta = .99, max_treedepth = 17)
 )
 
 # Get current estimates for Scenario 1
@@ -525,40 +526,41 @@ cat("Running Bayesian model for Scenario 2...\n")
 # Run model for Scenario 2
 m_s2 <- brm(
   formula = bf(
-    outcome ~ 1 + s(time, k = 12, bs = "cs", m = 2) + (1 | pollster)
+    outcome ~ 1 + s(time, k = 8, bs = "cs", m = 2) + (1 | pollster)
   ),
   family = dirichlet(link = "logit", refcat = "Other"),
   prior = prior(normal(0, 1.5), class = "Intercept", dpar = "muPiS") +
-    prior(exponential(2), class = "sd", dpar = "muPiS") +
-    prior(exponential(2), class = "sds", dpar = "muPiS") +
+    prior(exponential(3), class = "sd", dpar = "muPiS") +
+    prior(exponential(3), class = "sds", dpar = "muPiS") +
     prior(normal(0, 1.5), class = "Intercept", dpar = "muKO") +
-    prior(exponential(2), class = "sd", dpar = "muKO") +
-    prior(exponential(2), class = "sds", dpar = "muKO") +
+    prior(exponential(3), class = "sd", dpar = "muKO") +
+    prior(exponential(3), class = "sds", dpar = "muKO") +
     prior(normal(0, 1.5), class = "Intercept", dpar = "muLewicaplus") +
-    prior(exponential(2), class = "sd", dpar = "muLewicaplus") +
-    prior(exponential(2), class = "sds", dpar = "muLewicaplus") +
+    prior(exponential(3), class = "sd", dpar = "muLewicaplus") +
+    prior(exponential(3), class = "sds", dpar = "muLewicaplus") +
     prior(normal(0, 1.5), class = "Intercept", dpar = "muPolska2050") +
-    prior(exponential(2), class = "sd", dpar = "muPolska2050") +
-    prior(exponential(2), class = "sds", dpar = "muPolska2050") +
+    prior(exponential(3), class = "sd", dpar = "muPolska2050") +
+    prior(exponential(3), class = "sds", dpar = "muPolska2050") +
     prior(normal(0, 1.5), class = "Intercept", dpar = "muPSL") +
-    prior(exponential(2), class = "sd", dpar = "muPSL") +
-    prior(exponential(2), class = "sds", dpar = "muPSL") +
+    prior(exponential(3), class = "sd", dpar = "muPSL") +
+    prior(exponential(3), class = "sds", dpar = "muPSL") +
     prior(normal(0, 1.5), class = "Intercept", dpar = "muKonfederacja") +
-    prior(exponential(2), class = "sd", dpar = "muKonfederacja") +
-    prior(exponential(2), class = "sds", dpar = "muKonfederacja") +
+    prior(exponential(3), class = "sd", dpar = "muKonfederacja") +
+    prior(exponential(3), class = "sds", dpar = "muKonfederacja") +
     prior(normal(0, 1.5), class = "Intercept", dpar = "muKKP") +
-    prior(exponential(2), class = "sd", dpar = "muKKP") +
-    prior(exponential(2), class = "sds", dpar = "muKKP") +
-    prior(gamma(1, 0.01), class = "phi"),
+    prior(exponential(3), class = "sd", dpar = "muKKP") +
+    prior(exponential(3), class = "sds", dpar = "muKKP") +
+    prior(gamma(2, 0.1), class = "phi"),
   data = polls_s2,
   seed = 780045,
-  iter = 2000,
+  iter = 3000,
+  warmup = 2000,
   backend = "cmdstanr",
   threads = threading(threads_per_chain),
   chains = n_chains,
   cores = n_chains,
   refresh = 5,
-  control = list(adapt_delta = .95, max_treedepth = 15)
+  control = list(adapt_delta = .99, max_treedepth = 17)
 )
 
 # Get current estimates for Scenario 2
