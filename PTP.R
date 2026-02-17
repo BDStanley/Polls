@@ -333,12 +333,13 @@ polls <- polls %>%
   ))
 
 # Calculate Other and check totals
+# Clamp Other to TINY_CONSTANT so it is always present in the model;
+# apply_threshold_and_normalize will rebase all columns to sum to 1.
 polls <- polls %>%
   mutate(
-    Other = 1 - rowSums(across(all_of(PARTY_COLS[1:8]))),
+    Other = pmax(1 - rowSums(across(all_of(PARTY_COLS[1:8]))), TINY_CONSTANT),
     check = rowSums(across(all_of(PARTY_COLS)))
-  ) %>%
-  filter(!Other < 0)
+  )
 
 # Apply threshold fix and normalize
 polls <- apply_threshold_and_normalize(polls, PARTY_COLS)

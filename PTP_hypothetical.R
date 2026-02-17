@@ -211,12 +211,13 @@ polls_base <- polls_base %>%
   ))
 
 # Calculate Other and check totals
+# Clamp Other to TINY_CONSTANT so it is always present in the model;
+# apply_threshold_and_normalize will rebase all columns to sum to 1.
 polls_base <- polls_base %>%
   mutate(
-    Other = 1 - rowSums(across(all_of(PARTY_COLS[1:8]))),
+    Other = pmax(1 - rowSums(across(all_of(PARTY_COLS[1:8]))), TINY_CONSTANT),
     check = rowSums(across(all_of(PARTY_COLS)))
-  ) %>%
-  filter(!Other < 0)
+  )
 
 # Load weights and shapefile
 weights <- read_excel('2023_elec_percentages.xlsx')
