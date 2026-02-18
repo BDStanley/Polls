@@ -656,6 +656,24 @@ point_dta <- polls %>%
   ) %>%
   filter(party != "Other") # Exclude "Other" from plot
 
+# Save pre-computed data for Shiny app (small summaries only)
+trend_lines <- pred_dta %>%
+  group_by(date, party) %>%
+  summarise(median_epred = median(.epred), .groups = "drop")
+
+date_summaries <- pred_dta %>%
+  group_by(date, party) %>%
+  summarise(
+    median_pct = round(median(.epred) * 100, 1),
+    lower_pct = round(quantile(.epred, 0.10) * 100, 1),
+    upper_pct = round(quantile(.epred, 0.90) * 100, 1),
+    .groups = "drop"
+  )
+
+saveRDS(trend_lines, "trend_lines.rds")
+saveRDS(date_summaries, "date_summaries.rds")
+saveRDS(point_dta, "point_dta.rds")
+
 trends_parl <- pred_dta %>%
   ggplot(aes(x = date, color = party, fill = party)) +
   ggdist::stat_lineribbon(
@@ -1716,6 +1734,9 @@ ggsave(
 )
 
 source("PTP_hypothetical.R")
+
+#####Deploy Shiny app#####
+source("deploy.R")
 
 #####Save to Github#####
 system("git add -A")
