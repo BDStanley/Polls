@@ -625,8 +625,8 @@ pred_dta <- tibble(
   filter(party != "Other") # Exclude "Other" from plot
 
 point_dta <- polls %>%
-  select(midDate, all_of(PARTY_COLS)) %>%
-  pivot_longer(cols = -midDate, names_to = "party", values_to = "est") %>%
+  select(midDate, org, all_of(PARTY_COLS)) %>%
+  pivot_longer(cols = -c(midDate, org), names_to = "party", values_to = "est") %>%
   mutate(
     party = factor(
       party,

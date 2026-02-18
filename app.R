@@ -73,7 +73,8 @@ trend_lines <- readRDS("trend_lines.rds")
 date_summaries <- readRDS("date_summaries.rds") %>%
   mutate(party = factor(party, levels = PARTY_ORDER)) %>%
   filter(!is.na(party))
-point_dta <- readRDS("point_dta.rds")
+point_dta <- readRDS("point_dta.rds") %>%
+  mutate(midDate_num = as.numeric(midDate))
 
 available_dates <- sort(unique(date_summaries$date))
 
@@ -125,23 +126,98 @@ ui <- fluidPage(
       display: inline-block; width: 10px; height: 10px;
       border-radius: 50%; margin-right: 6px; vertical-align: middle;
     }
+    .point-tooltip {
+      position: absolute;
+      background: white;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 0.9em;
+      pointer-events: none;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+      z-index: 100;
+      white-space: nowrap;
+    }
   "
   ))),
   div(
     class = "fixed-container",
     titlePanel("Polish Polling Trends"),
-    plotOutput(
-      "trend_plot",
-      click = "plot_click",
-      width = "900px",
-      height = "600px"
+    div(
+      style = "position: relative;",
+      plotOutput(
+        "trend_plot",
+        click = "plot_click",
+        hover = hoverOpts("plot_hover", delay = 100, delayType = "debounce"),
+        width = "900px",
+        height = "600px"
+      ),
+      uiOutput("point_tooltip")
     ),
     div(class = "popup-container", uiOutput("click_info"))
   )
 )
 
+# --- Helper ---
+build_popup_html <- function(snapped_date) {
+  day_data <- date_summaries %>%
+    filter(date == snapped_date) %>%
+    arrange(desc(median_pct))
+
+  if (nrow(day_data) == 0) {
+    return(NULL)
+  }
+
+  entries <- day_data %>%
+    rowwise() %>%
+    mutate(
+      color_hex = PARTY_COLORS[as.character(party)],
+      entry_html = paste0(
+        "<div class='popup-entry'>",
+        "<span class='popup-party'><span class='color-dot' style='background:",
+        color_hex,
+        ";'></span>",
+        party,
+        "</span>",
+        "<span class='popup-est'>",
+        median_pct,
+        "%</span>",
+        "<span class='popup-ci'>",
+        lower_pct,
+        "% \u2013 ",
+        upper_pct,
+        "%</span>",
+        "</div>"
+      )
+    ) %>%
+    pull(entry_html)
+
+  paste0(
+    "<div style='display:inline-block; padding:16px; border:1px solid #ddd; ",
+    "border-radius:8px;'>",
+    "<h4 style='margin-top:0;'>",
+    format(snapped_date, "%e %B %Y"),
+    "</h4>",
+    "<div class='popup-grid'>",
+    paste(entries, collapse = ""),
+    "</div>",
+    "<p style='margin-bottom:0; margin-top:12px; color:#999; font-size:0.9em;'>",
+    "Click anywhere on the plot to view vote shares for other dates. ",
+    "Hover over any of the points to see particular polling house estimates.</p>",
+    "</div>"
+  )
+}
+
 # --- Server ---
 server <- function(input, output, session) {
+  selected_date <- reactiveVal(max(available_dates))
+
+  observeEvent(input$plot_click, {
+    clicked_date <- as.Date(input$plot_click$x, origin = "1970-01-01")
+    idx <- which.min(abs(available_dates - clicked_date))
+    selected_date(available_dates[idx])
+  })
+
   output$trend_plot <- renderPlot(
     {
       showtext_opts(dpi = 96)
@@ -169,66 +245,39 @@ server <- function(input, output, session) {
     execOnResize = TRUE
   )
 
-  output$click_info <- renderUI({
-    if (is.null(input$plot_click)) {
-      return(div(
-        class = "popup-placeholder",
-        "Click on the plot above to view estimates."
-      ))
-    }
+  output$point_tooltip <- renderUI({
+    hover <- input$plot_hover
+    if (is.null(hover)) return(NULL)
 
-    clicked_date <- as.Date(input$plot_click$x, origin = "1970-01-01")
-
-    # Snap to nearest available date
-    idx <- which.min(abs(available_dates - clicked_date))
-    snapped_date <- available_dates[idx]
-
-    day_data <- date_summaries %>%
-      filter(date == snapped_date) %>%
-      arrange(desc(median_pct))
-
-    if (nrow(day_data) == 0) {
-      return(NULL)
-    }
-
-    # Build HTML grid entries
-    entries <- day_data %>%
-      rowwise() %>%
-      mutate(
-        color_hex = PARTY_COLORS[as.character(party)],
-        entry_html = paste0(
-          "<div class='popup-entry'>",
-          "<span class='popup-party'><span class='color-dot' style='background:",
-          color_hex,
-          ";'></span>",
-          party,
-          "</span>",
-          "<span class='popup-est'>",
-          median_pct,
-          "%</span>",
-          "<span class='popup-ci'>",
-          lower_pct,
-          "% \u2013 ",
-          upper_pct,
-          "%</span>",
-          "</div>"
-        )
-      ) %>%
-      pull(entry_html)
-
-    html_content <- paste0(
-      "<div style='display:inline-block; padding:16px; border:1px solid #ddd; ",
-      "border-radius:8px;'>",
-      "<h4 style='margin-top:0;'>",
-      format(snapped_date, "%e %B %Y"),
-      "</h4>",
-      "<div class='popup-grid'>",
-      paste(entries, collapse = ""),
-      "</div>",
-      "</div>"
+    point <- nearPoints(
+      point_dta, hover,
+      xvar = "midDate_num", yvar = "est",
+      threshold = 10, maxpoints = 1
     )
 
-    HTML(html_content)
+    if (nrow(point) == 0) return(NULL)
+
+    color <- PARTY_COLORS[as.character(point$party[1])]
+    left_px <- hover$coords_css$x
+    top_px <- hover$coords_css$y
+
+    style <- paste0(
+      "left:", left_px + 12, "px; top:", top_px + 12, "px;"
+    )
+
+    div(
+      class = "point-tooltip", style = style,
+      HTML(paste0(
+        "<span class='color-dot' style='background:", color, ";'></span>",
+        "<b>", point$party[1], "</b> ", round(point$est[1] * 100, 1), "%<br>",
+        as.character(point$org[1]), " &middot; ",
+        format(point$midDate[1], "%e %B %Y")
+      ))
+    )
+  })
+
+  output$click_info <- renderUI({
+    HTML(build_popup_html(selected_date()))
   })
 }
 
