@@ -142,7 +142,7 @@ ui <- fluidPage(
   ))),
   div(
     class = "fixed-container",
-    titlePanel("Polish Polling Trends"),
+    titlePanel("Vote intention polling in Poland"),
     div(
       style = "position: relative;",
       plotOutput(
@@ -182,11 +182,11 @@ build_popup_html <- function(snapped_date) {
         "<span class='popup-est'>",
         median_pct,
         "%</span>",
-        "<span class='popup-ci'>",
+        "<span class='popup-ci'>(",
         lower_pct,
         "% \u2013 ",
         upper_pct,
-        "%</span>",
+        "%)</span>",
         "</div>"
       )
     ) %>%
@@ -247,30 +247,49 @@ server <- function(input, output, session) {
 
   output$point_tooltip <- renderUI({
     hover <- input$plot_hover
-    if (is.null(hover)) return(NULL)
+    if (is.null(hover)) {
+      return(NULL)
+    }
 
     point <- nearPoints(
-      point_dta, hover,
-      xvar = "midDate_num", yvar = "est",
-      threshold = 10, maxpoints = 1
+      point_dta,
+      hover,
+      xvar = "midDate_num",
+      yvar = "est",
+      threshold = 10,
+      maxpoints = 1
     )
 
-    if (nrow(point) == 0) return(NULL)
+    if (nrow(point) == 0) {
+      return(NULL)
+    }
 
     color <- PARTY_COLORS[as.character(point$party[1])]
     left_px <- hover$coords_css$x
     top_px <- hover$coords_css$y
 
     style <- paste0(
-      "left:", left_px + 12, "px; top:", top_px + 12, "px;"
+      "left:",
+      left_px + 12,
+      "px; top:",
+      top_px + 12,
+      "px;"
     )
 
     div(
-      class = "point-tooltip", style = style,
+      class = "point-tooltip",
+      style = style,
       HTML(paste0(
-        "<span class='color-dot' style='background:", color, ";'></span>",
-        "<b>", point$party[1], "</b> ", round(point$est[1] * 100, 1), "%<br>",
-        as.character(point$org[1]), " &middot; ",
+        "<span class='color-dot' style='background:",
+        color,
+        ";'></span>",
+        "<b>",
+        point$party[1],
+        "</b> ",
+        round(point$est[1] * 100, 1),
+        "%<br>",
+        as.character(point$org[1]),
+        " &middot; ",
         format(point$midDate[1], "%e %B %Y")
       ))
     )
