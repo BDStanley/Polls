@@ -626,7 +626,11 @@ pred_dta <- tibble(
 
 point_dta <- polls %>%
   select(midDate, org, all_of(PARTY_COLS)) %>%
-  pivot_longer(cols = -c(midDate, org), names_to = "party", values_to = "est") %>%
+  pivot_longer(
+    cols = -c(midDate, org),
+    names_to = "party",
+    values_to = "est"
+  ) %>%
   mutate(
     party = factor(
       party,
@@ -1738,10 +1742,10 @@ source("PTP_hypothetical.R")
 #####Deploy Shiny app#####
 source("deploy.R")
 
-#####Save to Github#####
+#####Save to Github and sync to iCloud#####
 system("git add -A")
 system('git commit -m "Update $(date +"%Y-%m-%d %H:%M:%S")"')
 system("git push")
 system(
-  "rsync -av --include='*.png' --exclude='*' '/Users/benstanley/Positron/Polls/' '/Users/benstanley/Positron/Website/PTP images/'"
+  'rsync -av --delete --size-only --exclude=".git" "/Users/benstanley/Positron/Polls/" "/Users/benstanley/Library/Mobile Documents/com~apple~CloudDocs/Polls/"'
 )
