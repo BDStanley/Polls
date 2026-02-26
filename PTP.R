@@ -1749,3 +1749,6 @@ system("git push")
 system(
   'rsync -av --delete --size-only --exclude=".git" "/Users/benstanley/Positron/Polls/" "/Users/benstanley/Library/Mobile Documents/com~apple~CloudDocs/Polls/"'
 )
+system(
+  'rsync -av --include="*.png" --exclude="*" "/Users/benstanley/Positron/Polls/" "/Users/benstanley/Positron/Website/docs/PTP images/"'
+)
