@@ -1747,7 +1747,10 @@ system("git add -A")
 system('git commit -m "Update $(date +"%Y-%m-%d %H:%M:%S")"')
 system("git push")
 system(
-  'rsync -av --delete --size-only --exclude=".git" "/Users/benstanley/Positron/Polls/" "/Users/benstanley/Library/Mobile Documents/com~apple~CloudDocs/Polls/"'
+  'rsync -av --delete --checksum --exclude=".git" --exclude="Archive" \\
+  --protect-args \\
+  "/Users/benstanley/Positron/Polls/" \\
+  "/Users/benstanley/Library/Mobile Documents/com~apple~CloudDocs/Polls/"'
 )
 system(
   'rsync -av --include="*.png" --exclude="*" "/Users/benstanley/Positron/Polls/" "/Users/benstanley/Positron/Website/PTP images/"'
