@@ -1973,9 +1973,20 @@ weekly_summaries <- map_dfr(target_dates, function(target_date) {
     mutate(
       seats_result = list(
         giveseats(
-          v = c(KO, Konfederacja, KKP, Lewica, Razem, MN, PiS,
-                `Polska 2050`, PSL),
-          ns = magnitude, method = "dh", thresh = 0
+          v = c(
+            KO,
+            Konfederacja,
+            KKP,
+            Lewica,
+            Razem,
+            MN,
+            PiS,
+            `Polska 2050`,
+            PSL
+          ),
+          ns = magnitude,
+          method = "dh",
+          thresh = 0
         )$seats
       )
     ) %>%
@@ -1993,14 +2004,34 @@ weekly_summaries <- map_dfr(target_dates, function(target_date) {
     )
 
   const_seats <- const_single %>%
-    select(okreg, KO_seats, PiS_seats, Konfederacja_seats, KKP_seats,
-           Polska2050_seats, PSL_seats, MN_seats, Lewica_seats, Razem_seats) %>%
-    rename(
-      KO = KO_seats, PiS = PiS_seats, Konfederacja = Konfederacja_seats,
-      KKP = KKP_seats, `Polska 2050` = Polska2050_seats, PSL = PSL_seats,
-      MN = MN_seats, Lewica = Lewica_seats, Razem = Razem_seats
+    select(
+      okreg,
+      KO_seats,
+      PiS_seats,
+      Konfederacja_seats,
+      KKP_seats,
+      Polska2050_seats,
+      PSL_seats,
+      MN_seats,
+      Lewica_seats,
+      Razem_seats
     ) %>%
-    pivot_longer(cols = -okreg, names_to = "party", values_to = "median_seats") %>%
+    rename(
+      KO = KO_seats,
+      PiS = PiS_seats,
+      Konfederacja = Konfederacja_seats,
+      KKP = KKP_seats,
+      `Polska 2050` = Polska2050_seats,
+      PSL = PSL_seats,
+      MN = MN_seats,
+      Lewica = Lewica_seats,
+      Razem = Razem_seats
+    ) %>%
+    pivot_longer(
+      cols = -okreg,
+      names_to = "party",
+      values_to = "median_seats"
+    ) %>%
     mutate(date = target_date)
 
   constituency_seats_list[[as.character(target_date)]] <<- const_seats
@@ -2057,7 +2088,7 @@ saveRDS(weekly_summaries, "weekly_summaries.rds")
 constituency_seats <- bind_rows(constituency_seats_list)
 saveRDS(constituency_seats, "constituency_seats.rds")
 
-source("PTP_hypothetical.R")
+#source("PTP_hypothetical.R")
 
 #####Deploy Shiny app#####
 source("deploy.R")

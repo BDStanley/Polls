@@ -106,13 +106,27 @@ available_dates <- sort(unique(weekly_summaries$date))
 
 # --- UI ---
 ui <- fluidPage(
-  tags$head(tags$style(HTML(
+  tags$head(
+    tags$meta(name = "viewport", content = "width=device-width, initial-scale=1"),
+    tags$style(HTML(
     "
     @import url('https://fonts.googleapis.com/css2?family=Jost:wght@400;500&display=swap');
     body { font-family: 'Jost', sans-serif; }
     .fixed-container {
       max-width: 900px;
       margin: 0 auto;
+      padding: 0 10px;
+      box-sizing: border-box;
+    }
+    .plot-wrapper {
+      position: relative;
+      width: 100%;
+      max-width: 810px;
+    }
+    .plot-wrapper .shiny-plot-output {
+      width: 100% !important;
+      height: auto !important;
+      aspect-ratio: 810 / 540;
     }
     .popup-container {
       min-height: 320px;
@@ -221,28 +235,60 @@ ui <- fluidPage(
       padding: 2px 0;
     }
     .map-popup-party {
-      min-width: 110px;
+      min-width: 90px;
+      white-space: nowrap;
     }
     .map-popup-seats {
       font-weight: bold;
       min-width: 30px;
       text-align: right;
     }
+
+    /* --- Mobile responsive styles --- */
+    @media (max-width: 768px) {
+      .popup-layout {
+        flex-direction: column;
+        flex-wrap: wrap;
+      }
+      .popup-coalitions {
+        border-left: none;
+        border-top: 1px solid #ddd;
+        padding-left: 0;
+        padding-top: 12px;
+      }
+      .popup-map {
+        border-left: none;
+        border-top: 1px solid #ddd;
+        padding-left: 0;
+        padding-top: 12px;
+      }
+      .popup-container {
+        min-height: auto;
+      }
+      .click-info-box {
+        width: 100% !important;
+        box-sizing: border-box;
+      }
+    }
   "
   ))),
   div(
     class = "fixed-container",
-    titlePanel("Pooled polls of vote intention in Poland"),
     div(
-      style = "position: relative;",
+      class = "plot-wrapper",
       plotOutput(
         "trend_plot",
         click = "plot_click",
         hover = hoverOpts("plot_hover", delay = 100, delayType = "debounce"),
-        width = "810px",
+        width = "100%",
         height = "540px"
       ),
       uiOutput("point_tooltip")
+    ),
+    tags$p(
+      style = "color:#999; font-size:0.85em; max-width:810px;",
+      "Click anywhere on the plot to see vote and seat estimates for the nearest week.",
+      "Hover over any of the points to see particular polling house estimates."
     ),
     div(class = "popup-container", uiOutput("click_info"))
   )
@@ -340,8 +386,13 @@ build_popup_html <- function(snapped_date) {
 
   list(
     grid_html = paste0(
+      "<div>",
       "<div class='popup-grid'>",
       paste(entries, collapse = ""),
+      "</div>",
+      "<p style='margin-bottom:0; margin-top:8px; color:#999; font-size:0.75em;'>",
+      "80% credible intervals are shown in brackets. ",
+      "Seat shares are median estimates and may not sum to 460.</p>",
       "</div>"
     ),
     coalition_html = paste0(
@@ -351,12 +402,6 @@ build_popup_html <- function(snapped_date) {
       "<div style='margin-top:8px; color:#999; font-size:0.85em;'>",
       "&#10003; = \u2265 231 (majority)</div>",
       "</div>"
-    ),
-    notes_html = paste0(
-      "<p style='margin-bottom:0; margin-top:12px; color:#999; font-size:0.85em;'>",
-      "Click anywhere on the plot to see vote and seat estimates for the nearest week. ",
-      "Hover over any of the points to see particular polling house estimates. ",
-      "80% credible intervals are shown in brackets. Estimated seat shares may not sum to 460.</p>"
     )
   )
 }
@@ -455,6 +500,7 @@ server <- function(input, output, session) {
     if (is.null(popup_html)) return(NULL)
 
     div(
+      class = "click-info-box",
       style = "padding:16px; border:1px solid #ddd; border-radius:8px; width:fit-content;",
       tags$h4(
         style = "margin-top:0; font-weight:normal;",
@@ -477,8 +523,7 @@ server <- function(input, output, session) {
             "Click on the map for seat shares in specific constituencies."
           )
         )
-      ),
-      HTML(popup_html$notes_html)
+      )
     )
   })
 
