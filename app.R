@@ -213,6 +213,13 @@ allocate_seats <- function(vote_shares_pct) {
   bind_rows(results)
 }
 
+# Initial seat data: all parties with 0 seats (before simulation is run)
+sim_initial_seats <- data.frame(
+  party = setdiff(SIM_PARTIES, "Other"),
+  seats = 0L,
+  stringsAsFactors = FALSE
+)
+
 # --- UI ---
 ui <- fluidPage(
   tags$head(
@@ -255,11 +262,22 @@ ui <- fluidPage(
     .popup-layout {
       display: flex;
       gap: 16px;
+      align-items: flex-start;
+    }
+    .popup-layout h5 {
+      margin: 0 0 8px 0;
+      font-size: 1.4rem;
+      font-weight: bold;
+      font-family: 'Jost', sans-serif;
+      line-height: 1.2;
     }
     .popup-grid {
       display: grid;
       grid-template-columns: auto auto;
       gap: 0 16px;
+    }
+    .popup-layout > div:first-child {
+      flex: 1 1 auto;
     }
     .popup-coalitions {
       border-left: 1px solid #ddd;
@@ -267,11 +285,7 @@ ui <- fluidPage(
       min-width: 160px;
       font-size: 0.85em;
       align-self: flex-start;
-    }
-    .popup-coalitions h5 {
-      margin: 0 0 8px 0;
-      font-size: 1.18em;
-      font-weight: bold;
+      flex: 0 0 auto;
     }
     .coalition-entry {
       padding: 4px 0;
@@ -331,6 +345,7 @@ ui <- fluidPage(
     .popup-map {
       border-left: 1px solid #ddd;
       padding-left: 16px;
+      flex: 0 0 auto;
     }
     .map-popup {
       position: absolute;
@@ -363,10 +378,6 @@ ui <- fluidPage(
       margin-top: 40px;
       padding-top: 20px;
       border-top: 2px solid #ddd;
-    }
-    .sim-layout {
-      display: flex;
-      gap: 24px;
     }
     .sim-inputs {
       flex: 0 0 auto;
@@ -404,13 +415,6 @@ ui <- fluidPage(
     }
     .sim-total-ok { background: #e8f5e9; }
     .sim-total-bad { background: #ffebee; }
-    .sim-results {
-      flex: 1;
-    }
-    .sim-results-layout {
-      display: flex;
-      gap: 16px;
-    }
     .sim-seat-list {
       min-width: 180px;
     }
@@ -429,11 +433,6 @@ ui <- fluidPage(
       font-weight: bold;
       min-width: 30px;
       text-align: right;
-    }
-    .sim-coalitions {
-      border-left: 1px solid #ddd;
-      padding-left: 16px;
-      font-size: 0.85em;
     }
 
     /* --- Mobile responsive styles --- */
@@ -460,18 +459,6 @@ ui <- fluidPage(
       .click-info-box {
         width: 100% !important;
         box-sizing: border-box;
-      }
-      .sim-layout {
-        flex-direction: column;
-      }
-      .sim-results-layout {
-        flex-direction: column;
-      }
-      .sim-coalitions {
-        border-left: none;
-        border-top: 1px solid #ddd;
-        padding-left: 0;
-        padding-top: 12px;
       }
     }
   "
@@ -519,48 +506,51 @@ ui <- fluidPage(
         "Vote shares must sum to 100% before running the simulation."
       ),
       div(
-        class = "sim-layout",
+        class = "popup-layout",
         div(
-          class = "sim-inputs",
-          lapply(SIM_PARTIES, function(p) {
-            col <- PARTY_COLORS[p]
-            div(
-              class = "sim-input-row",
+          style = "display:flex; gap:32px;",
+          div(
+            class = "sim-inputs",
+            lapply(SIM_PARTIES, function(p) {
+              col <- PARTY_COLORS[p]
               div(
-                class = "sim-input-label",
-                HTML(paste0(
-                  "<span class='color-dot' style='background:", col, ";'></span>",
-                  p
-                ))
-              ),
-              div(
-                class = "sim-input-box",
-                numericInput(
-                  inputId = paste0("sim_", gsub(" ", "_", p)),
-                  label = NULL,
-                  value = sim_defaults[p],
-                  min = 0, max = 100,
-                  step = 0.1
-                )
-              ),
-              span(class = "sim-input-pct", "%")
-            )
-          }),
-          uiOutput("sim_total_display"),
-          actionButton("sim_run", "Calculate seats",
-                       style = "margin-top:8px;")
+                class = "sim-input-row",
+                div(
+                  class = "sim-input-label",
+                  HTML(paste0(
+                    "<span class='color-dot' style='background:", col, ";'></span>",
+                    p
+                  ))
+                ),
+                div(
+                  class = "sim-input-box",
+                  numericInput(
+                    inputId = paste0("sim_", gsub(" ", "_", p)),
+                    label = NULL,
+                    value = 0,
+                    min = 0, max = 100,
+                    step = 0.1
+                  )
+                ),
+                span(class = "sim-input-pct", "%")
+              )
+            }),
+            uiOutput("sim_total_display")
+          ),
+          div(
+            class = "sim-seat-list",
+            uiOutput("sim_results_ui")
+          )
         ),
-        div(
-          class = "sim-results",
-          uiOutput("sim_results_ui")
-        )
+        uiOutput("sim_coalitions_ui"),
+        uiOutput("sim_map_ui")
       )
     )
   )
 )
 
 # --- Helpers ---
-# Build coalition list dynamically based on compatibility rules
+# Build governing majorities based on compatibility rules
 build_coalitions <- function(get_seats_fn) {
   short_names <- c(
     "KO" = "KO", "Polska 2050" = "P2050", "Lewica" = "Lewica",
@@ -569,9 +559,9 @@ build_coalitions <- function(get_seats_fn) {
   )
 
   all_parties <- names(short_names)
-  # Only consider parties that won seats
+  # Only consider parties that won seats, sorted by seats descending
   active_parties <- all_parties[sapply(all_parties, function(p) get_seats_fn(p) > 0)]
-  if (length(active_parties) < 2) return(list())
+  active_parties <- active_parties[order(-sapply(active_parties, get_seats_fn))]
 
   # Forbidden pairs (incompatible coalition partners)
   forbidden <- list(
@@ -591,27 +581,47 @@ build_coalitions <- function(get_seats_fn) {
     TRUE
   }
 
-  # Enumerate all combinations of 2+ active parties
+  # Identify parties with a single-party majority
+  majority_parties <- active_parties[sapply(active_parties, function(p)
+    get_seats_fn(p) >= 231)]
+
   coalitions <- list()
-  for (size in 2:length(active_parties)) {
-    combos <- combn(active_parties, size, simplify = FALSE)
-    for (combo in combos) {
-      if (is_compatible(combo)) {
+
+  # Add single-party governments
+  for (p in majority_parties) {
+    s <- get_seats_fn(p)
+    coalitions[[length(coalitions) + 1]] <- list(
+      name = short_names[p],
+      seats = s,
+      parties = p
+    )
+  }
+
+  # Enumerate multi-party coalitions (2+ parties)
+  if (length(active_parties) >= 2) {
+    for (size in 2:length(active_parties)) {
+      combos <- combn(active_parties, size, simplify = FALSE)
+      for (combo in combos) {
+        # Skip coalitions that are supersets of a single-party majority
+        if (any(majority_parties %in% combo)) next
+        if (!is_compatible(combo)) next
         total_seats <- sum(sapply(combo, get_seats_fn))
-        coalitions[[length(coalitions) + 1]] <- list(
-          name = paste(short_names[combo], collapse = " + "),
-          seats = total_seats
-        )
+        if (total_seats >= 231) {
+          coalitions[[length(coalitions) + 1]] <- list(
+            name = paste(short_names[combo], collapse = " + "),
+            seats = total_seats,
+            parties = combo
+          )
+        }
       }
     }
   }
 
-  # Filter to >= 200 seats and sort by seats descending
-  coalitions <- coalitions[sapply(coalitions, function(x) x$seats >= 200)]
+  # Sort by seats descending
   coalitions[order(-sapply(coalitions, function(x) x$seats))]
 }
 
-build_popup_html <- function(snapped_date) {
+build_popup_html <- function(snapped_date, date_label = NULL) {
   day_data <- weekly_summaries %>%
     filter(date == snapped_date) %>%
     arrange(desc(median_pct))
@@ -666,24 +676,33 @@ build_popup_html <- function(snapped_date) {
   coalitions <- build_coalitions(get_seats)
 
   coalition_entries <- sapply(coalitions, function(c) {
-    majority_icon <- if (c$seats >= 231) {
-      "<span class='coalition-majority' style='color:green;'>&#10003;</span>"
+    label <- if (c$seats >= 307) {
+      "<span class='coalition-majority' style='color:green;'>constitutional majority</span>"
+    } else if (c$seats >= 276) {
+      "<span class='coalition-majority' style='color:green;'>veto override</span>"
     } else {
-      "<span class='coalition-majority' style='color:red;'>&#10007;</span>"
+      ""
     }
     paste0(
       "<div class='coalition-entry'>",
       "<div class='coalition-name'>", c$name, "</div>",
       "<div><span class='coalition-seats'>", c$seats, " seats</span>",
-      majority_icon,
+      label,
       "</div>",
       "</div>"
     )
   })
 
+  date_heading <- if (!is.null(date_label)) {
+    paste0("<h5>", date_label, "</h5>")
+  } else {
+    ""
+  }
+
   list(
     grid_html = paste0(
       "<div>",
+      date_heading,
       "<div class='popup-grid'>",
       paste(entries, collapse = ""),
       "</div>",
@@ -694,10 +713,8 @@ build_popup_html <- function(snapped_date) {
     ),
     coalition_html = paste0(
       "<div class='popup-coalitions'>",
-      "<h5>Coalitions</h5>",
+      "<h5>Governing majorities</h5>",
       paste(coalition_entries, collapse = ""),
-      "<div style='margin-top:8px; color:#999; font-size:0.85em;'>",
-      "&#10003; = \u2265 231 (majority)</div>",
       "</div>"
     )
   )
@@ -793,24 +810,18 @@ server <- function(input, output, session) {
   })
 
   output$click_info <- renderUI({
-    popup_html <- build_popup_html(selected_date())
+    popup_html <- build_popup_html(selected_date(),
+                                    date_label = format(selected_date(), "%e %B %Y"))
     if (is.null(popup_html)) return(NULL)
 
     div(
-      tags$p(
-        style = "margin-top:0; margin-bottom:8px; font-weight:bold;",
-        format(selected_date(), "%e %B %Y")
-      ),
       div(
         class = "popup-layout",
         HTML(popup_html$grid_html),
         HTML(popup_html$coalition_html),
         div(
           class = "popup-map",
-          tags$h5(
-            style = "margin:0 0 4px 0; font-size:1.18em; font-weight:bold;",
-            "Constituency seat shares"
-          ),
+          tags$h5("Constituency seat shares"),
           div(
             style = "position: relative;",
             plotOutput("seat_map", click = "map_click",
@@ -957,7 +968,8 @@ server <- function(input, output, session) {
     )
   })
 
-  sim_seat_data <- reactiveVal(NULL)
+  sim_seat_data <- reactiveVal(sim_initial_seats)
+  sim_has_run <- reactiveVal(FALSE)
   sim_selected_const <- reactiveVal(NULL)
 
   observeEvent(input$sim_run, {
@@ -969,12 +981,13 @@ server <- function(input, output, session) {
     vote_shares <- setNames(as.numeric(vals), SIM_PARTIES)
     result <- allocate_seats(vote_shares)
     sim_seat_data(result)
+    sim_has_run(TRUE)
     sim_selected_const(NULL)
   })
 
   sim_map_data <- reactive({
     result <- sim_seat_data()
-    if (is.null(result)) return(NULL)
+    if (is.null(result) || !("okreg" %in% names(result))) return(NULL)
 
     totals <- result %>%
       group_by(okreg) %>%
@@ -1003,16 +1016,21 @@ server <- function(input, output, session) {
     md
   })
 
-  output$sim_results_ui <- renderUI({
+  sim_national <- reactive({
     result <- sim_seat_data()
     if (is.null(result)) return(NULL)
-
-    # National seat totals
     national <- result %>%
       group_by(party) %>%
-      summarise(seats = sum(seats), .groups = "drop") %>%
-      filter(seats > 0) %>%
-      arrange(desc(seats))
+      summarise(seats = sum(seats), .groups = "drop")
+    if (sim_has_run()) {
+      national <- national %>% filter(seats > 0)
+    }
+    national %>% arrange(desc(seats))
+  })
+
+  output$sim_results_ui <- renderUI({
+    national <- sim_national()
+    if (is.null(national)) return(NULL)
 
     seat_entries <- lapply(seq_len(nrow(national)), function(i) {
       p <- national$party[i]
@@ -1026,59 +1044,64 @@ server <- function(input, output, session) {
       ))
     })
 
-    # Coalition calculations
-    get_s <- function(p) {
-      val <- national$seats[national$party == p]
-      if (length(val) == 0) 0L else val
-    }
-    coalitions <- build_coalitions(get_s)
+    div(
+      tags$h5("Seats"),
+      actionButton("sim_run", "Calculate seats",
+                   style = "margin-bottom:8px;"),
+      tagList(seat_entries)
+    )
+  })
 
-    coalition_html <- lapply(coalitions, function(co) {
-      icon <- if (co$seats >= 231) {
-        "<span class='coalition-majority' style='color:green;'>&#10003;</span>"
-      } else {
-        "<span class='coalition-majority' style='color:red;'>&#10007;</span>"
+  output$sim_coalitions_ui <- renderUI({
+    national <- sim_national()
+    if (is.null(national)) return(NULL)
+
+    coalition_content <- NULL
+    if (sim_has_run()) {
+      get_s <- function(p) {
+        val <- national$seats[national$party == p]
+        if (length(val) == 0) 0L else val
       }
-      HTML(paste0(
-        "<div class='coalition-entry'>",
-        "<div class='coalition-name'>", co$name, "</div>",
-        "<div><span class='coalition-seats'>", co$seats, " seats</span>",
-        icon, "</div></div>"
-      ))
-    })
+      coalitions <- build_coalitions(get_s)
+
+      coalition_content <- lapply(coalitions, function(co) {
+        label <- if (co$seats >= 307) {
+          "<span class='coalition-majority' style='color:green;'>constitutional majority</span>"
+        } else if (co$seats >= 276) {
+          "<span class='coalition-majority' style='color:green;'>veto override</span>"
+        } else {
+          ""
+        }
+        HTML(paste0(
+          "<div class='coalition-entry'>",
+          "<div class='coalition-name'>", co$name, "</div>",
+          "<div><span class='coalition-seats'>", co$seats, " seats</span>",
+          label, "</div></div>"
+        ))
+      })
+    }
 
     div(
+      class = "popup-coalitions",
+      tags$h5("Governing majorities"),
+      tagList(coalition_content)
+    )
+  })
+
+  output$sim_map_ui <- renderUI({
+    sim_seat_data()  # trigger reactivity
+    div(
+      class = "popup-map",
+      tags$h5("Constituency seat shares"),
       div(
-        class = "sim-results-layout",
-        div(
-          class = "sim-seat-list",
-          tags$h5(style = "margin:0 0 8px 0;", "Seats"),
-          tagList(seat_entries)
-        ),
-        div(
-          class = "sim-coalitions",
-          tags$h5(style = "margin:0 0 8px 0;", "Coalitions"),
-          tagList(coalition_html),
-          div(style = "margin-top:8px; color:#999; font-size:0.85em;",
-              HTML("&#10003; = \u2265 231 (majority)"))
-        ),
-        div(
-          class = "popup-map",
-          tags$h5(
-            style = "margin:0 0 4px 0; font-size:1.18em; font-weight:bold;",
-            "Constituency seat shares"
-          ),
-          div(
-            style = "position: relative;",
-            plotOutput("sim_map", click = "sim_map_click",
-                       width = "250px", height = "280px"),
-            uiOutput("sim_map_popup")
-          ),
-          tags$p(
-            style = "margin:4px 0 0 0; color:#999; font-size:0.75em; max-width:250px;",
-            "Click on the map for constituency seat shares."
-          )
-        )
+        style = "position: relative;",
+        plotOutput("sim_map", click = "sim_map_click",
+                   width = "250px", height = "280px"),
+        uiOutput("sim_map_popup")
+      ),
+      tags$p(
+        style = "margin:4px 0 0 0; color:#999; font-size:0.75em; max-width:250px;",
+        "Click on the map for constituency seat shares."
       )
     )
   })
