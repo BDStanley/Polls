@@ -807,8 +807,8 @@ server <- function(input, output, session) {
         HTML(popup_html$coalition_html),
         div(
           class = "popup-map",
-          tags$p(
-            style = "margin:0 0 4px 0; font-weight:bold;",
+          tags$h5(
+            style = "margin:0 0 4px 0; font-size:1.18em; font-weight:bold;",
             "Constituency seat shares"
           ),
           div(
@@ -1064,8 +1064,8 @@ server <- function(input, output, session) {
         ),
         div(
           class = "popup-map",
-          tags$p(
-            style = "margin:0 0 4px 0; font-weight:bold;",
+          tags$h5(
+            style = "margin:0 0 4px 0; font-size:1.18em; font-weight:bold;",
             "Constituency seat shares"
           ),
           div(
