@@ -221,6 +221,7 @@ ui <- fluidPage(
     "
     @import url('https://fonts.googleapis.com/css2?family=Jost:wght@400;500&display=swap');
     body { font-family: 'Jost', sans-serif; }
+    html, body, .container-fluid { height: auto !important; min-height: 0 !important; }
     .fixed-container {
       max-width: 900px;
       margin: 0 auto;
