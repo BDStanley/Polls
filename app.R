@@ -2073,7 +2073,17 @@ server <- function(input, output, session) {
       }
     }
 
-    tagList(rows)
+    tagList(
+      rows,
+      div(
+        style = "margin-top:8px;",
+        tags$button(
+          class = "coalition-btn",
+          onclick = "openCoalitionModal();",
+          "Build coalition"
+        )
+      )
+    )
   })
 
   # Read input values — handles both coalition and non-coalition modes
@@ -2329,13 +2339,8 @@ server <- function(input, output, session) {
     div(
       tags$h5("Seats"),
       div(
-        style = "display:flex; gap:8px; margin-bottom:8px; align-items:center;",
-        actionButton("sim_run", "Calculate seats"),
-        tags$button(
-          class = "coalition-btn",
-          onclick = "openCoalitionModal();",
-          "Build coalition"
-        )
+        style = "margin-bottom:8px;",
+        actionButton("sim_run", "Calculate seats")
       ),
       tagList(seat_entries)
     )
@@ -2358,6 +2363,63 @@ server <- function(input, output, session) {
           val <- national$seats[national$party == p]
           if (length(val) == 0) 0L else val
         }
+
+        # Map each entity name (using short names matching national$party) to its member parties
+        short_names <- c(
+          "KO" = "KO",
+          "Polska 2050" = "P2050",
+          "Lewica" = "Lewica",
+          "PSL" = "PSL",
+          "PiS" = "PiS",
+          "Konfederacja" = "Konf.",
+          "KKP" = "KKP",
+          "Razem" = "Razem",
+          "MN" = "MN"
+        )
+        entity_members <- list()
+        for (coal in coals) {
+          coal_name <- paste(short_names[coal], collapse = " + ")
+          entity_members[[coal_name]] <- coal
+        }
+
+        # Forbidden pairs (same as build_coalitions)
+        forbidden <- list(
+          c("Konfederacja", "Lewica"),
+          c("Konfederacja", "Razem"),
+          c("KKP", "Lewica"),
+          c("KKP", "Razem"),
+          c("KKP", "KO"),
+          c("PiS", "KO"),
+          c("PiS", "Lewica")
+        )
+
+        # Check if a combination of entities is compatible
+        # Parties within the same entity (electoral coalition) are exempt
+        is_combo_compatible <- function(entity_combo) {
+          # Collect all member parties across different entities
+          all_cross_parties <- list()
+          for (ent in entity_combo) {
+            members <- entity_members[[ent]]
+            if (is.null(members)) members <- ent  # solo party
+            all_cross_parties[[ent]] <- members
+          }
+          # Check forbidden pairs across different entities
+          for (fp in forbidden) {
+            # Find which entities contain each forbidden party
+            ent_for_p1 <- NULL
+            ent_for_p2 <- NULL
+            for (ent in names(all_cross_parties)) {
+              if (fp[1] %in% all_cross_parties[[ent]]) ent_for_p1 <- c(ent_for_p1, ent)
+              if (fp[2] %in% all_cross_parties[[ent]]) ent_for_p2 <- c(ent_for_p2, ent)
+            }
+            if (!is.null(ent_for_p1) && !is.null(ent_for_p2)) {
+              # Forbidden if the two parties are in DIFFERENT entities
+              if (!any(ent_for_p1 %in% ent_for_p2)) return(FALSE)
+            }
+          }
+          TRUE
+        }
+
         # Build governing majorities from the entities in national
         entity_names <- national$party[national$seats > 0]
         gov_combos <- list()
@@ -2365,6 +2427,7 @@ server <- function(input, output, session) {
         for (size in 1:length(entity_names)) {
           combos <- combn(entity_names, size, simplify = FALSE)
           for (combo in combos) {
+            if (!is_combo_compatible(combo)) next
             total <- sum(sapply(combo, get_s))
             if (total >= 231) {
               gov_combos[[length(gov_combos) + 1]] <- list(
