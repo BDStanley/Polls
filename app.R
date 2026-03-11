@@ -705,17 +705,6 @@ ui <- fluidPage(
     }
     .agency-selector .shiny-input-container { margin-bottom: 0; }
     .agency-selector label.control-label { display: none; }
-    .agency-approx-note {
-      font-size: 0.8em;
-      color: #b07020;
-      background: #fff8f0;
-      border: 1px solid #f0d8b0;
-      border-radius: 6px;
-      padding: 8px 12px;
-      margin-top: 8px;
-      max-width: 810px;
-    }
-
     /* --- Coalition builder styles --- */
     .coalition-modal-overlay {
       display: none;
@@ -883,18 +872,8 @@ ui <- fluidPage(
         choices = setNames(ALL_AGENCIES, ALL_AGENCIES),
         selected = character(0),
         inline = TRUE
-      ),
-      div(
-        style = "display:flex; gap:8px; margin-top:6px; align-items:center;",
-        actionButton(
-          "agency_generate",
-          "Generate estimates",
-          class = "coalition-btn coalition-btn-primary"
-        ),
-        actionButton("agency_reset", "Show all", class = "coalition-btn")
       )
     ),
-    uiOutput("agency_approx_note"),
     div(
       class = "plot-wrapper",
       plotOutput(
@@ -1199,298 +1178,20 @@ server <- function(input, output, session) {
   selected_date <- reactiveVal(max(available_dates))
   selected_constituency <- reactiveVal(NULL)
 
-  # --- Agency selector reactives ---
-  # State: committed agencies (only updated on button click)
-  committed_agencies <- reactiveVal(ALL_AGENCIES) # start in Bayesian mode
-
-  observeEvent(input$agency_generate, {
-    sel <- input$agency_selector
-    if (is.null(sel) || length(sel) == 0) {
-      return()
-    } # need at least 1
-    committed_agencies(sel)
-    selected_constituency(NULL)
-  })
-
-  observeEvent(input$agency_reset, {
-    committed_agencies(ALL_AGENCIES)
-    updateCheckboxGroupInput(
-      session,
-      "agency_selector",
-      selected = character(0)
-    )
-    selected_constituency(NULL)
-  })
-
+  # --- Agency selector ---
+  # Which agencies are highlighted (empty = show all)
   selected_agencies <- reactive({
-    committed_agencies()
+    sel <- input$agency_selector
+    if (is.null(sel) || length(sel) == 0) ALL_AGENCIES else sel
   })
 
-  using_bayesian <- reactive({
-    setequal(committed_agencies(), ALL_AGENCIES)
-  })
-
-  # LOESS trend lines (replaces trend_lines when subset selected)
-  active_trend_lines <- reactive({
-    if (using_bayesian()) {
-      return(trend_lines)
-    }
-
-    sel <- selected_agencies()
-    sub_data <- point_dta %>% filter(org %in% sel)
-    if (nrow(sub_data) < 5) {
-      return(trend_lines)
-    } # fallback if too little data
-
-    # Prediction grid: same dates as trend_lines
-    pred_dates <- sort(unique(trend_lines$date))
-    pred_num <- as.numeric(pred_dates)
-
-    parties <- levels(sub_data$party)
-    if (is.null(parties)) {
-      parties <- unique(as.character(sub_data$party))
-    }
-
-    # Helper: fill NAs by carrying forward then backward
-    fill_na <- function(x) {
-      for (i in seq_along(x)) {
-        if (i > 1 && is.na(x[i])) x[i] <- x[i - 1]
-      }
-      for (i in rev(seq_along(x))) {
-        if (i < length(x) && is.na(x[i])) x[i] <- x[i + 1]
-      }
-      x
-    }
-
-    results <- lapply(parties, function(p) {
-      pd <- sub_data %>% filter(as.character(party) == p)
-      if (nrow(pd) < 4) {
-        return(NULL)
-      }
-      fit <- tryCatch(
-        loess(est ~ as.numeric(midDate), data = pd, span = 0.3),
-        error = function(e) NULL
-      )
-      if (is.null(fit)) {
-        return(NULL)
-      }
-      pred <- predict(fit, newdata = data.frame(midDate = pred_num))
-      pred <- fill_na(pred)
-      pred <- pmax(0, pmin(1, pred))
-      data.frame(
-        date = pred_dates,
-        party = factor(p, levels = PARTY_ORDER),
-        median_epred = pred,
-        stringsAsFactors = FALSE
-      )
-    })
-    bind_rows(results)
-  })
-
-  # LOESS weekly summaries (replaces weekly_summaries when subset selected)
-  active_weekly_summaries <- reactive({
-    if (using_bayesian()) {
-      return(weekly_summaries)
-    }
-
-    sel <- selected_agencies()
-    sub_data <- point_dta %>% filter(org %in% sel)
-    if (nrow(sub_data) < 5) {
-      return(weekly_summaries)
-    }
-
-    parties <- PARTY_ORDER
-    target_num <- as.numeric(available_dates)
-
-    # Helper: fill NAs by carrying forward then backward
-    fill_na <- function(x) {
-      for (i in seq_along(x)) {
-        if (i > 1 && is.na(x[i])) x[i] <- x[i - 1]
-      }
-      for (i in rev(seq_along(x))) {
-        if (i < length(x) && is.na(x[i])) x[i] <- x[i + 1]
-      }
-      x
-    }
-
-    # Fit LOESS per party and predict at available_dates
-    party_preds <- lapply(parties, function(p) {
-      pd <- sub_data %>% filter(as.character(party) == p)
-      if (nrow(pd) < 4) {
-        return(setNames(rep(0, length(available_dates)), available_dates))
-      }
-      fit <- tryCatch(
-        loess(est ~ as.numeric(midDate), data = pd, span = 0.3),
-        error = function(e) NULL
-      )
-      if (is.null(fit)) {
-        return(setNames(rep(0, length(available_dates)), available_dates))
-      }
-      pred <- predict(fit, newdata = data.frame(midDate = target_num))
-      pred <- fill_na(pred)
-      pred <- pmax(0, pmin(1, pred))
-      setNames(pred, as.character(available_dates))
-    })
-    names(party_preds) <- parties
-
-    # For each date: compute vote shares, allocate seats
-    results <- lapply(available_dates, function(d) {
-      d_chr <- as.character(d)
-      pcts <- setNames(
-        sapply(
-          parties,
-          function(p) unname(party_preds[[p]][d_chr]) * 100,
-          USE.NAMES = FALSE
-        ),
-        parties
-      )
-      pcts[is.na(pcts)] <- 0
-
-      # Build full vote shares vector for allocate_seats
-      vote_shares <- setNames(rep(0, length(SIM_PARTIES)), SIM_PARTIES)
-      for (p in parties) {
-        vote_shares[p] <- pcts[p]
-      }
-      vote_shares["MN"] <- sim_defaults["MN"]
-      vote_shares["Other"] <- max(
-        0,
-        100 - sum(vote_shares[SIM_PARTIES != "Other"])
-      )
-
-      seat_result <- allocate_seats(vote_shares)
-      national <- seat_result %>%
-        group_by(party) %>%
-        summarise(seats = sum(seats), .groups = "drop")
-
-      seat_counts <- sapply(
-        parties,
-        function(p) {
-          val <- national$seats[national$party == p]
-          if (length(val) == 0) 0L else val
-        },
-        USE.NAMES = FALSE
-      )
-
-      data.frame(
-        party = factor(parties, levels = PARTY_ORDER),
-        median_pct = round(unname(pcts[parties]), 1),
-        lower_pct = NA_real_,
-        upper_pct = NA_real_,
-        median_seats = seat_counts,
-        lower_seats = NA_real_,
-        upper_seats = NA_real_,
-        date = d,
-        stringsAsFactors = FALSE
-      )
-    })
-    bind_rows(results)
-  })
-
-  # LOESS constituency seats (replaces constituency_seats when subset selected)
-  active_constituency_seats <- reactive({
-    if (using_bayesian()) {
-      return(constituency_seats)
-    }
-
-    sel <- selected_agencies()
-    sub_data <- point_dta %>% filter(org %in% sel)
-    if (nrow(sub_data) < 5) {
-      return(constituency_seats)
-    }
-
-    parties <- PARTY_ORDER
-    target_num <- as.numeric(available_dates)
-
-    fill_na <- function(x) {
-      for (i in seq_along(x)) {
-        if (i > 1 && is.na(x[i])) x[i] <- x[i - 1]
-      }
-      for (i in rev(seq_along(x))) {
-        if (i < length(x) && is.na(x[i])) x[i] <- x[i + 1]
-      }
-      x
-    }
-
-    # Pre-compute predictions for all dates per party
-    party_pred_all <- lapply(parties, function(p) {
-      pd <- sub_data %>% filter(as.character(party) == p)
-      if (nrow(pd) < 4) {
-        return(rep(0, length(target_num)))
-      }
-      fit <- tryCatch(
-        loess(est ~ as.numeric(midDate), data = pd, span = 0.3),
-        error = function(e) NULL
-      )
-      if (is.null(fit)) {
-        return(rep(0, length(target_num)))
-      }
-      pred <- predict(fit, newdata = data.frame(midDate = target_num))
-      pred <- fill_na(pred)
-      pmax(0, pmin(1, pred)) * 100
-    })
-    names(party_pred_all) <- parties
-
-    results <- lapply(seq_along(available_dates), function(di) {
-      d <- available_dates[di]
-      pcts <- setNames(
-        sapply(parties, function(p) party_pred_all[[p]][di], USE.NAMES = FALSE),
-        parties
-      )
-
-      vote_shares <- setNames(rep(0, length(SIM_PARTIES)), SIM_PARTIES)
-      for (p in parties) {
-        vote_shares[p] <- pcts[p]
-      }
-      vote_shares["MN"] <- sim_defaults["MN"]
-      vote_shares["Other"] <- max(
-        0,
-        100 - sum(vote_shares[SIM_PARTIES != "Other"])
-      )
-
-      seat_result <- allocate_seats(vote_shares)
-      seat_result$median_seats <- seat_result$seats
-      seat_result$date <- d
-      seat_result[, c("okreg", "party", "median_seats", "date")]
-    })
-    bind_rows(results)
-  })
-
-  # Description text (changes based on mode)
+  # Description text
   output$trend_description <- renderUI({
-    if (using_bayesian()) {
-      tags$p(
-        style = "color:#999; font-size:0.85em; max-width:810px; margin-bottom:8px;",
-        "Click anywhere on the plot to see vote and seat estimates for the nearest week.",
-        "Hover over any of the points to see particular polling house estimates.",
-        "Select one or more polling agencies below and click 'Generate estimates' to see",
-        "approximate trends based on those agencies only."
-      )
-    } else {
-      tags$p(
-        style = "color:#999; font-size:0.85em; max-width:810px; margin-bottom:8px;",
-        "Showing LOESS approximation based on selected agencies.",
-        "Click anywhere on the plot to see vote and seat estimates for the nearest week.",
-        "Click 'Show all (Bayesian)' to return to the full model estimates."
-      )
-    }
-  })
-
-  # Approximation note
-  output$agency_approx_note <- renderUI({
-    if (using_bayesian()) {
-      return(NULL)
-    }
-    n <- length(selected_agencies())
-    div(
-      class = "agency-approx-note",
-      paste0(
-        "Estimates based on a LOESS approximation using polls from ",
-        n,
-        " selected agenc",
-        ifelse(n == 1, "y", "ies"),
-        ". These are simplified trend estimates without the full ",
-        "Bayesian model's credible intervals or house-effect corrections."
-      )
+    tags$p(
+      style = "color:#999; font-size:0.85em; max-width:810px; margin-bottom:8px;",
+      "Click anywhere on the plot to see vote and seat estimates for the nearest week.",
+      "Hover over any of the points to see particular polling house estimates.",
+      "Click on one or more polling agencies below to highlight their polls on the chart."
     )
   })
 
@@ -1617,7 +1318,7 @@ server <- function(input, output, session) {
     {
       showtext_opts(dpi = 96)
       sel <- selected_agencies()
-      tl <- active_trend_lines()
+      tl <- trend_lines
 
       # Split points into selected and deselected agencies
       pts_selected <- point_dta %>% filter(org %in% sel)
@@ -1723,8 +1424,8 @@ server <- function(input, output, session) {
     popup_html <- build_popup_html(
       selected_date(),
       date_label = format(selected_date(), "%e %B %Y"),
-      weekly_data = active_weekly_summaries(),
-      show_ci = using_bayesian()
+      weekly_data = weekly_summaries,
+      show_ci = TRUE
     )
     if (is.null(popup_html)) {
       return(NULL)
@@ -1757,7 +1458,7 @@ server <- function(input, output, session) {
 
   # --- Map ---
   trend_const_seats <- reactive({
-    active_constituency_seats() %>% filter(date == selected_date())
+    constituency_seats %>% filter(date == selected_date())
   })
 
   map_data <- reactive({
