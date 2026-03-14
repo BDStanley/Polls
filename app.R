@@ -49,10 +49,10 @@ theme_plots <- function(base_size = 16, base_family = "Jost") {
       panel.grid.major = element_line(linewidth = 0.25, colour = "grey90"),
       axis.line = element_blank(),
       axis.ticks = element_blank(),
-      axis.text = element_text(size = 18),
-      axis.title.x = element_text(size = 18, margin = margin(t = 10)),
+      axis.text = element_text(size = rel(1)),
+      axis.title.x = element_text(size = rel(1), margin = margin(t = 10)),
       axis.title.y = element_text(
-        size = 18,
+        size = rel(1),
         hjust = 1,
         margin = margin(r = 10)
       ),
