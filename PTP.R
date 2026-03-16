@@ -2100,6 +2100,3 @@ system("git push")
 system(
   '/opt/homebrew/bin/rsync -av --delete --iconv=utf-8-mac,utf-8 --exclude=".quarto" --exclude=".git" --exclude="Archive" --protect-args "/Users/benstanley/Positron/Polls/" "/Users/benstanley/Library/Mobile Documents/com~apple~CloudDocs/Polls/"'
 )
-system(
-  'rsync -av --include="*.png" --exclude="*" "/Users/benstanley/Positron/Polls/" "/Users/benstanley/Positron/Website/PTP images/"'
-)
