@@ -81,7 +81,7 @@ weekly_summaries <- readRDS("weekly_summaries.rds") %>%
 point_dta <- readRDS("point_dta.rds") %>%
   mutate(midDate_num = as.numeric(midDate))
 constituency_seats <- readRDS("constituency_seats.rds")
-const_map <- readRDS("const_map.rds")
+const_map <- readRDS("const_map_cartogram.rds")
 
 # Fix Polish diacritics in constituency names
 polish_names <- c(
@@ -2101,7 +2101,9 @@ server <- function(input, output, session) {
           all_cross_parties <- list()
           for (ent in entity_combo) {
             members <- entity_members[[ent]]
-            if (is.null(members)) members <- ent  # solo party
+            if (is.null(members)) {
+              members <- ent
+            } # solo party
             all_cross_parties[[ent]] <- members
           }
           # Check forbidden pairs across different entities
@@ -2110,8 +2112,12 @@ server <- function(input, output, session) {
             ent_for_p1 <- NULL
             ent_for_p2 <- NULL
             for (ent in names(all_cross_parties)) {
-              if (fp[1] %in% all_cross_parties[[ent]]) ent_for_p1 <- c(ent_for_p1, ent)
-              if (fp[2] %in% all_cross_parties[[ent]]) ent_for_p2 <- c(ent_for_p2, ent)
+              if (fp[1] %in% all_cross_parties[[ent]]) {
+                ent_for_p1 <- c(ent_for_p1, ent)
+              }
+              if (fp[2] %in% all_cross_parties[[ent]]) {
+                ent_for_p2 <- c(ent_for_p2, ent)
+              }
             }
             if (!is.null(ent_for_p1) && !is.null(ent_for_p2)) {
               # Forbidden if the two parties are in DIFFERENT entities
@@ -2128,7 +2134,9 @@ server <- function(input, output, session) {
         for (size in 1:length(entity_names)) {
           combos <- combn(entity_names, size, simplify = FALSE)
           for (combo in combos) {
-            if (!is_combo_compatible(combo)) next
+            if (!is_combo_compatible(combo)) {
+              next
+            }
             total <- sum(sapply(combo, get_s))
             if (total >= 231) {
               gov_combos[[length(gov_combos) + 1]] <- list(
