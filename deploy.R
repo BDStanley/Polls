@@ -11,7 +11,7 @@ library(rsconnect)
 
 deployApp(
   appDir = ".",
-  appFiles = c("app.R", "trend_lines.rds", "date_summaries.rds", "point_dta.rds", "weekly_summaries.rds", "constituency_seats.rds", "const_map.rds", "sim_weights.rds"),
+  appFiles = c("app.R", "trend_lines.rds", "date_summaries.rds", "point_dta.rds", "weekly_summaries.rds", "constituency_seats.rds", "const_map.rds", "const_map_cartogram.rds", "sim_weights.rds"),
   appName = "polish-polls",
   forceUpdate = TRUE
 )
