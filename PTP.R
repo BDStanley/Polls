@@ -2088,8 +2088,6 @@ saveRDS(weekly_summaries, "weekly_summaries.rds")
 constituency_seats <- bind_rows(constituency_seats_list)
 saveRDS(constituency_seats, "constituency_seats.rds")
 
-#source("PTP_hypothetical.R")
-
 #####Deploy Shiny app#####
 source("deploy.R")
 
