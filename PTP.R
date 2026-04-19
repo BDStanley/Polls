@@ -1616,59 +1616,69 @@ frame <- frame %>%
     party = reorder(party, -y)
   )
 
-# Calculate coalition statistics
-coalition_pis_konf_kkp <- frame$y[frame$party == "PiS"] +
-  frame$y[frame$party == "Konfederacja"] +
-  frame$y[frame$party == "KKP"]
-coalition_opposition <- sum(frame$y[
-  frame$party %in% c("KO", "Lewica", "Polska 2050", "PSL")
-])
-coalition_ko_konf <- frame$y[frame$party == "KO"] +
-  frame$y[frame$party == "Konfederacja"]
-coalition_pis_konf <- frame$y[frame$party == "PiS"] +
-  frame$y[frame$party == "Konfederacja"]
+# Build all plausible majority coalitions — ported from app.R build_coalitions()
+build_coalitions_static <- function(get_seats_fn) {
+  short_names <- c(
+    "KO" = "KO", "Polska 2050" = "P2050", "Lewica" = "Lewica",
+    "PSL" = "PSL", "PiS" = "PiS", "Konfederacja" = "Konf.",
+    "KKP" = "KKP", "Razem" = "Razem"
+  )
+  all_parties <- names(short_names)
+  active_parties <- all_parties[sapply(all_parties, function(p) get_seats_fn(p) > 0)]
+  active_parties <- active_parties[order(-sapply(active_parties, get_seats_fn))]
+  forbidden <- list(
+    c("Konfederacja", "Lewica"), c("Konfederacja", "Razem"),
+    c("KKP", "Lewica"), c("KKP", "Razem"),
+    c("KKP", "KO"), c("PiS", "KO"), c("PiS", "Lewica")
+  )
+  is_compatible <- function(parties) {
+    for (fp in forbidden) { if (all(fp %in% parties)) return(FALSE) }
+    TRUE
+  }
+  majority_parties <- active_parties[sapply(active_parties, function(p) get_seats_fn(p) >= 231)]
+  coalitions <- list()
+  for (p in majority_parties) {
+    coalitions[[length(coalitions) + 1]] <- list(name = short_names[p], seats = get_seats_fn(p))
+  }
+  if (length(active_parties) >= 2) {
+    for (size in 2:length(active_parties)) {
+      for (combo in combn(active_parties, size, simplify = FALSE)) {
+        if (any(majority_parties %in% combo)) next
+        if (!is_compatible(combo)) next
+        total <- sum(sapply(combo, get_seats_fn))
+        if (total >= 231) {
+          coalitions[[length(coalitions) + 1]] <- list(
+            name = paste(short_names[combo], collapse = " + "), seats = total
+          )
+        }
+      }
+    }
+  }
+  coalitions[order(-sapply(coalitions, function(x) x$seats))]
+}
 
-pis_konf_kkp_status <- ifelse(
-  coalition_pis_konf_kkp >= 231,
-  "Majority",
-  "No majority"
-)
-opposition_status <- ifelse(
-  coalition_opposition >= 231,
-  "Majority",
-  "No majority"
-)
-ko_konf_status <- ifelse(
-  coalition_ko_konf >= 231,
-  "Majority",
-  "No majority"
-)
-pis_konf_status <- ifelse(
-  coalition_pis_konf >= 231,
-  "Majority",
-  "No majority"
-)
+.get_seats <- function(p) {
+  v <- frame$y[as.character(frame$party) == p]
+  if (length(v) == 0) 0L else v[[1]]
+}
+.coalitions <- build_coalitions_static(.get_seats)
 
-pis_konf_kkp_text <- paste0(
-  "PiS + Konfederacja + KKP: ",
-  coalition_pis_konf_kkp,
-  " seats"
-)
-opposition_text <- paste0(
-  "KO + Lewica + Polska 2050 + PSL: ",
-  coalition_opposition,
-  " seats"
-)
-ko_konf_text <- paste0(
-  "KO + Konfederacja: ",
-  coalition_ko_konf,
-  " seats"
-)
-pis_konf_text <- paste0(
-  "PiS + Konfederacja: ",
-  coalition_pis_konf,
-  " seats"
-)
+# Label data: y = coalition seat total, nudged apart by minimum 15 units
+coalition_label_df <- if (length(.coalitions) == 0) {
+  data.frame(x = numeric(0), y = numeric(0), label = character(0))
+} else {
+  .seats <- sapply(.coalitions, `[[`, "seats")
+  .y <- .seats
+  for (i in seq_along(.y)[-1]) {
+    if (.y[i - 1] - .y[i] < 15) .y[i] <- .y[i - 1] - 15
+  }
+  data.frame(
+    x     = 5,
+    y     = .y,
+    label = paste0(sapply(.coalitions, `[[`, "name"), ": ", .seats, " seats"),
+    stringsAsFactors = FALSE
+  )
+}
 
 # Generate seats plot
 seats_parl <- ggplot(
@@ -1714,41 +1724,11 @@ seats_parl <- ggplot(
     inherit.aes = FALSE
   ) +
   geom_label(
-    data = data.frame(x = 5, y = 280, label = pis_konf_kkp_text),
+    data = coalition_label_df,
     aes(x = x, y = y, label = label),
     hjust = 0,
-    size = 2.5,
-    fill = ifelse(coalition_pis_konf_kkp >= 231, "lightgreen", "lightcoral"),
-    linewidth = 0,
-    family = "Jost",
-    inherit.aes = FALSE
-  ) +
-  geom_label(
-    data = data.frame(x = 5, y = 250, label = opposition_text),
-    aes(x = x, y = y, label = label),
-    hjust = 0,
-    size = 2.5,
-    fill = ifelse(coalition_opposition >= 231, "lightgreen", "lightcoral"),
-    linewidth = 0,
-    family = "Jost",
-    inherit.aes = FALSE
-  ) +
-  geom_label(
-    data = data.frame(x = 5, y = 220, label = ko_konf_text),
-    aes(x = x, y = y, label = label),
-    hjust = 0,
-    size = 2.5,
-    fill = ifelse(coalition_ko_konf >= 231, "lightgreen", "lightcoral"),
-    linewidth = 0,
-    family = "Jost",
-    inherit.aes = FALSE
-  ) +
-  geom_label(
-    data = data.frame(x = 5, y = 190, label = pis_konf_text),
-    aes(x = x, y = y, label = label),
-    hjust = 0,
-    size = 2.5,
-    fill = ifelse(coalition_pis_konf >= 231, "lightgreen", "lightcoral"),
+    size = 2.3,
+    fill = "white",
     linewidth = 0,
     family = "Jost",
     inherit.aes = FALSE
