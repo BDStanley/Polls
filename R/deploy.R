@@ -8,10 +8,22 @@
 # Get your token/secret from: https://www.shinyapps.io/admin/#/tokens
 
 library(rsconnect)
+library(here)
 
 deployApp(
-  appDir = ".",
-  appFiles = c("app.R", "trend_lines.rds", "date_summaries.rds", "point_dta.rds", "weekly_summaries.rds", "constituency_seats.rds", "const_map.rds", "const_map_cartogram.rds", "sim_weights.rds"),
+  appDir = here(),
+  appPrimaryDoc = "R/app.R",
+  appFiles = c(
+    "R/app.R",
+    "data/trend_lines.rds",
+    "data/date_summaries.rds",
+    "data/point_dta.rds",
+    "data/weekly_summaries.rds",
+    "data/constituency_seats.rds",
+    "data/const_map.rds",
+    "data/const_map_cartogram.rds",
+    "data/sim_weights.rds"
+  ),
   appName = "polish-polls",
   forceUpdate = TRUE
 )

@@ -3,6 +3,7 @@ library(tidyverse)
 library(lubridate)
 library(showtext)
 library(sf)
+library(here)
 
 # Load Jost from Google Fonts
 font_add_google("Jost", "Jost")
@@ -71,17 +72,17 @@ my_date_format <- function() {
 }
 
 # --- Load pre-computed data ---
-trend_lines <- readRDS("trend_lines.rds")
-date_summaries <- readRDS("date_summaries.rds") %>%
+trend_lines <- readRDS(here("data", "trend_lines.rds"))
+date_summaries <- readRDS(here("data", "date_summaries.rds")) %>%
   mutate(party = factor(party, levels = PARTY_ORDER)) %>%
   filter(!is.na(party))
-weekly_summaries <- readRDS("weekly_summaries.rds") %>%
+weekly_summaries <- readRDS(here("data", "weekly_summaries.rds")) %>%
   mutate(party = factor(party, levels = c(PARTY_ORDER, "MN"))) %>%
   filter(!is.na(party))
-point_dta <- readRDS("point_dta.rds") %>%
+point_dta <- readRDS(here("data", "point_dta.rds")) %>%
   mutate(midDate_num = as.numeric(midDate))
-constituency_seats <- readRDS("constituency_seats.rds")
-const_map <- readRDS("const_map_cartogram.rds")
+constituency_seats <- readRDS(here("data", "constituency_seats.rds"))
+const_map <- readRDS(here("data", "const_map_cartogram.rds"))
 
 # Fix Polish diacritics in constituency names
 polish_names <- c(
@@ -134,7 +135,7 @@ available_dates <- sort(unique(weekly_summaries$date))
 ALL_AGENCIES <- sort(unique(point_dta$org))
 
 # --- Simulator data ---
-weights <- readRDS("sim_weights.rds")
+weights <- readRDS(here("data", "sim_weights.rds"))
 
 # Parties for the simulator (order for sliders and D'Hondt)
 SIM_PARTIES <- c(

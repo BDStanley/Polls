@@ -11,7 +11,8 @@ pacman::p_load(
   tidybayes,
   ggdist,
   ggblend,
-  seatdist
+  seatdist,
+  here
 )
 
 set.seed(780045)
@@ -295,7 +296,7 @@ generate_seat_map <- function(
 }
 
 #####Read in, adjust and subset data#####
-source("poll data scraper.R")
+source(here("R", "poll_data_scraper.R"))
 
 polls <- polls_cleaned %>%
   select(startDate, endDate, org, all_of(PARTY_COLS[1:8]), Other, DK) %>%
@@ -346,8 +347,8 @@ polls <- apply_threshold_and_normalize(polls, PARTY_COLS)
 #filter(midDate > as.Date('2025-06-10'))
 
 # Load weights and shapefile
-weights <- read_excel('2023_elec_percentages.xlsx')
-const <- st_read('GRED_20190215_Poland_2011.shp', quiet = TRUE)
+weights <- read_excel(here("data-raw", "2023_elec_percentages.xlsx"))
+const <- st_read(here("data-raw", "GRED_20190215_Poland_2011.shp"), quiet = TRUE)
 
 # Save pre-processed map data for Shiny app
 const_id_map <- create_const_id_mapping()
@@ -401,7 +402,7 @@ polish_names <- c(
 )
 const_map$cst_n <- polish_names[as.character(const_map$cst)]
 
-saveRDS(const_map, "const_map.rds")
+saveRDS(const_map, here("data", "const_map.rds"))
 
 # Generate pollster names
 names <- glue_collapse(
@@ -627,7 +628,7 @@ house_effects_plot <- house_effects_data %>%
 
 ggsave(
   house_effects_plot,
-  file = "house_effects.png",
+  file = here("figures", "house_effects.png"),
   width = 8,
   height = 12,
   units = "cm",
@@ -725,9 +726,9 @@ date_summaries <- pred_dta %>%
     .groups = "drop"
   )
 
-saveRDS(trend_lines, "trend_lines.rds")
-saveRDS(date_summaries, "date_summaries.rds")
-saveRDS(point_dta, "point_dta.rds")
+saveRDS(trend_lines, here("data", "trend_lines.rds"))
+saveRDS(date_summaries, here("data", "date_summaries.rds"))
+saveRDS(point_dta, here("data", "point_dta.rds"))
 
 trends_parl <- pred_dta %>%
   ggplot(aes(x = date, color = party, fill = party)) +
@@ -768,7 +769,7 @@ trends_parl <- pred_dta %>%
 
 ggsave(
   trends_parl,
-  file = "trends_parl.png",
+  file = here("figures", "trends_parl.png"),
   width = 7,
   height = 5,
   units = "cm",
@@ -946,7 +947,7 @@ latest_parl <- plotdraws %>%
 
 ggsave(
   latest_parl,
-  file = "latest_parl.png",
+  file = here("figures", "latest_parl.png"),
   width = 7,
   height = 5,
   units = "cm",
@@ -1195,7 +1196,7 @@ p_pis <- ggplot(plotdata) +
   theme_plots_map()
 ggsave(
   p_pis,
-  file = "PiS_seats.png",
+  file = here("figures", "PiS_seats.png"),
   width = 7,
   height = 7,
   units = "cm",
@@ -1223,7 +1224,7 @@ p_ko <- ggplot(plotdata) +
   theme_plots_map()
 ggsave(
   p_ko,
-  file = "KO_seats.png",
+  file = here("figures", "KO_seats.png"),
   width = 7,
   height = 7,
   units = "cm",
@@ -1254,7 +1255,7 @@ p_lewica <- ggplot(plotdata) +
   theme_plots_map()
 ggsave(
   p_lewica,
-  file = "Lewica_seats.png",
+  file = here("figures", "Lewica_seats.png"),
   width = 7,
   height = 7,
   units = "cm",
@@ -1282,7 +1283,7 @@ p_razem <- ggplot(plotdata) +
   theme_plots_map()
 ggsave(
   p_razem,
-  file = "Razem_seats.png",
+  file = here("figures", "Razem_seats.png"),
   width = 7,
   height = 7,
   units = "cm",
@@ -1310,7 +1311,7 @@ p_PSL <- ggplot(plotdata) +
   theme_plots_map()
 ggsave(
   p_PSL,
-  file = "PSL_seats.png",
+  file = here("figures", "PSL_seats.png"),
   width = 7,
   height = 7,
   units = "cm",
@@ -1341,7 +1342,7 @@ p_konfederacja <- ggplot(plotdata) +
   theme_plots_map()
 ggsave(
   p_konfederacja,
-  file = "Konfederacja_seats.png",
+  file = here("figures", "Konfederacja_seats.png"),
   width = 7,
   height = 7,
   units = "cm",
@@ -1372,7 +1373,7 @@ p_P2050 <- ggplot(plotdata) +
   theme_plots_map()
 ggsave(
   p_P2050,
-  file = "P2050_seats.png",
+  file = here("figures", "P2050_seats.png"),
   width = 7,
   height = 7,
   units = "cm",
@@ -1401,7 +1402,7 @@ p_pis_ko <- ggplot(plotdata) +
   theme_plots_map()
 ggsave(
   p_pis_ko,
-  file = "PiSKO_seats.png",
+  file = here("figures", "PiSKO_seats.png"),
   width = 7,
   height = 7,
   units = "cm",
@@ -1757,7 +1758,7 @@ seats_parl <- ggplot(
 
 ggsave(
   seats_parl,
-  file = "seats_parl.png",
+  file = here("figures", "seats_parl.png"),
   width = 7,
   height = 5,
   units = "cm",
@@ -2058,13 +2059,13 @@ weekly_summaries <- map_dfr(target_dates, function(target_date) {
   combined
 })
 
-saveRDS(weekly_summaries, "weekly_summaries.rds")
+saveRDS(weekly_summaries, here("data", "weekly_summaries.rds"))
 
 constituency_seats <- bind_rows(constituency_seats_list)
-saveRDS(constituency_seats, "constituency_seats.rds")
+saveRDS(constituency_seats, here("data", "constituency_seats.rds"))
 
 #####Deploy Shiny app#####
-source("deploy.R")
+source(here("R", "deploy.R"))
 
 #####Save to Github and sync to iCloud#####
 system("git add -A")
