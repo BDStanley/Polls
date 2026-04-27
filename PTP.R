@@ -2,15 +2,12 @@
 system("git pull")
 pacman::p_load(
   tidyverse,
-  googledrive,
-  rio,
   readxl,
   sf,
   glue,
   sjlabelled,
   lubridate,
   brms,
-  stringr,
   tidybayes,
   ggdist,
   ggblend,
@@ -959,8 +956,6 @@ ggsave(
 )
 
 #####Seat maps#####
-library(seatdist)
-
 median_PiS <- ifelse(
   medians$est[medians$.category == "PiS"] >= 5,
   medians$est[medians$.category == "PiS"],
