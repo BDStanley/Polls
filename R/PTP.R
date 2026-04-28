@@ -1,19 +1,29 @@
 #####Prepare workspace#####
 system("git pull")
-pacman::p_load(
-  tidyverse,
-  readxl,
-  sf,
-  glue,
-  sjlabelled,
-  lubridate,
-  brms,
-  tidybayes,
-  ggdist,
-  ggblend,
-  seatdist,
-  here
+
+if (!requireNamespace("pak", quietly = TRUE)) {
+  install.packages("pak", repos = "https://cran.r-project.org")
+}
+
+pkgs <- c(
+  "tidyverse",
+  "readxl",
+  "sf",
+  "glue",
+  "sjlabelled",
+  "lubridate",
+  "brms",
+  "tidybayes",
+  "ggdist",
+  "ggblend",
+  "seatdist",
+  "here"
 )
+missing_pkgs <- setdiff(pkgs, rownames(installed.packages()))
+if (length(missing_pkgs) > 0) {
+  pak::pkg_install(missing_pkgs, ask = FALSE)
+}
+invisible(lapply(pkgs, library, character.only = TRUE))
 
 set.seed(780045)
 
@@ -348,7 +358,10 @@ polls <- apply_threshold_and_normalize(polls, PARTY_COLS)
 
 # Load weights and shapefile
 weights <- read_excel(here("data-raw", "2023_elec_percentages.xlsx"))
-const <- st_read(here("data-raw", "GRED_20190215_Poland_2011.shp"), quiet = TRUE)
+const <- st_read(
+  here("data-raw", "GRED_20190215_Poland_2011.shp"),
+  quiet = TRUE
+)
 
 # Save pre-processed map data for Shiny app
 const_id_map <- create_const_id_mapping()
@@ -1615,36 +1628,59 @@ frame <- frame %>%
 # Build all plausible majority coalitions — ported from app.R build_coalitions()
 build_coalitions_static <- function(get_seats_fn) {
   short_names <- c(
-    "KO" = "KO", "Polska 2050" = "P2050", "Lewica" = "Lewica",
-    "PSL" = "PSL", "PiS" = "PiS", "Konfederacja" = "Konf.",
-    "KKP" = "KKP", "Razem" = "Razem"
+    "KO" = "KO",
+    "Polska 2050" = "P2050",
+    "Lewica" = "Lewica",
+    "PSL" = "PSL",
+    "PiS" = "PiS",
+    "Konfederacja" = "Konf.",
+    "KKP" = "KKP",
+    "Razem" = "Razem"
   )
   all_parties <- names(short_names)
-  active_parties <- all_parties[sapply(all_parties, function(p) get_seats_fn(p) > 0)]
+  active_parties <- all_parties[sapply(all_parties, function(p) {
+    get_seats_fn(p) > 0
+  })]
   active_parties <- active_parties[order(-sapply(active_parties, get_seats_fn))]
   forbidden <- list(
-    c("Konfederacja", "Lewica"), c("Konfederacja", "Razem"),
-    c("KKP", "Lewica"), c("KKP", "Razem"),
-    c("KKP", "KO"), c("PiS", "KO"), c("PiS", "Lewica")
+    c("Konfederacja", "Lewica"),
+    c("Konfederacja", "Razem"),
+    c("KKP", "Lewica"),
+    c("KKP", "Razem"),
+    c("KKP", "KO"),
+    c("PiS", "KO"),
+    c("PiS", "Lewica")
   )
   is_compatible <- function(parties) {
-    for (fp in forbidden) { if (all(fp %in% parties)) return(FALSE) }
+    for (fp in forbidden) {
+      if (all(fp %in% parties)) return(FALSE)
+    }
     TRUE
   }
-  majority_parties <- active_parties[sapply(active_parties, function(p) get_seats_fn(p) >= 231)]
+  majority_parties <- active_parties[sapply(active_parties, function(p) {
+    get_seats_fn(p) >= 231
+  })]
   coalitions <- list()
   for (p in majority_parties) {
-    coalitions[[length(coalitions) + 1]] <- list(name = short_names[p], seats = get_seats_fn(p))
+    coalitions[[length(coalitions) + 1]] <- list(
+      name = short_names[p],
+      seats = get_seats_fn(p)
+    )
   }
   if (length(active_parties) >= 2) {
     for (size in 2:length(active_parties)) {
       for (combo in combn(active_parties, size, simplify = FALSE)) {
-        if (any(majority_parties %in% combo)) next
-        if (!is_compatible(combo)) next
+        if (any(majority_parties %in% combo)) {
+          next
+        }
+        if (!is_compatible(combo)) {
+          next
+        }
         total <- sum(sapply(combo, get_seats_fn))
         if (total >= 231) {
           coalitions[[length(coalitions) + 1]] <- list(
-            name = paste(short_names[combo], collapse = " + "), seats = total
+            name = paste(short_names[combo], collapse = " + "),
+            seats = total
           )
         }
       }
@@ -1669,8 +1705,8 @@ coalition_label_df <- if (length(.coalitions) == 0) {
     if (.y[i - 1] - .y[i] < 15) .y[i] <- .y[i - 1] - 15
   }
   data.frame(
-    x     = 5,
-    y     = .y,
+    x = 5,
+    y = .y,
     label = paste0(sapply(.coalitions, `[[`, "name"), ": ", .seats, " seats"),
     stringsAsFactors = FALSE
   )

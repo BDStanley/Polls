@@ -1,4 +1,12 @@
-pacman::p_load(dplyr, lubridate, stringr, rvest)
+if (!requireNamespace("pak", quietly = TRUE)) {
+  install.packages("pak", repos = "https://cran.r-project.org")
+}
+pkgs <- c("dplyr", "lubridate", "stringr", "rvest")
+missing_pkgs <- setdiff(pkgs, rownames(installed.packages()))
+if (length(missing_pkgs) > 0) {
+  pak::pkg_install(missing_pkgs, ask = FALSE)
+}
+invisible(lapply(pkgs, library, character.only = TRUE))
 
 url <- "https://en.wikipedia.org/wiki/Opinion_polling_for_the_next_Polish_parliamentary_election"
 page <- read_html(url)
