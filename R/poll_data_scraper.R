@@ -11,10 +11,15 @@ invisible(lapply(pkgs, library, character.only = TRUE))
 url <- "https://en.wikipedia.org/wiki/Opinion_polling_for_the_next_Polish_parliamentary_election"
 page <- read_html(url)
 
-# Extract all tables and get the third (2026) and fourth (2025) ones
+# Extract all tables and find the polling-firm tables (2026 and 2025).
+# Wikipedia inserts/removes summary tables over time, so locate the poll
+# tables by their header rather than relying on a fixed table index.
 tables <- page %>% html_table(fill = TRUE)
-polls_2026 <- tables[[3]]
-polls_2025 <- tables[[4]]
+poll_table_idx <- which(sapply(tables, function(t) {
+  ncol(t) >= 1 && names(t)[1] == "Polling firm/Link"
+}))
+polls_2026 <- tables[[poll_table_idx[1]]]
+polls_2025 <- tables[[poll_table_idx[2]]]
 
 # Function to parse fieldwork dates and create start and end dates, with dynamic year
 parse_fieldwork_dates <- function(date_string, year) {
@@ -101,7 +106,9 @@ standardize_pollster_name <- function(pollster_name) {
 
 # Main cleaning process
 clean_polish_poll_data <- function(polls, year) {
-  polls_clean_cols <- polls[, 1:14]
+  # Keep at most the first 14 columns, but don't error if the source table
+  # has fewer (Wikipedia's column count changes as parties are added/removed).
+  polls_clean_cols <- polls[, seq_len(min(ncol(polls), 14))]
 
   cleaned_data <- polls_clean_cols %>%
     filter(
