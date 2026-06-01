@@ -1,13 +1,32 @@
 library(shiny)
-library(tidyverse)
-library(lubridate)
+library(dplyr)
+library(ggplot2)
 library(showtext)
 library(sf)
 library(here)
+# curl is required by font_add_google() to download the font. It is declared
+# explicitly so the deploy bundles it (it used to arrive transitively via
+# tidyverse). Without it, font_add_google() errors and the app fails to start.
+library(curl)
 
-# Load Jost from Google Fonts
-font_add_google("Jost", "Jost")
-font_add_google("Jost", "Jost Medium", regular.wt = 500)
+# Load Jost from Google Fonts. Wrapped in tryCatch so that a missing network
+# or download failure on the deploy host falls back to the default font
+# instead of crashing the app at startup. PLOT_FONT is used as the plot
+# font family everywhere, so it degrades to "sans" if Jost is unavailable.
+PLOT_FONT <- tryCatch(
+  {
+    font_add_google("Jost", "Jost")
+    font_add_google("Jost", "Jost Medium", regular.wt = 500)
+    "Jost"
+  },
+  error = function(e) {
+    message(
+      "Could not load Jost from Google Fonts; using default font: ",
+      conditionMessage(e)
+    )
+    "sans"
+  }
+)
 showtext_auto()
 showtext_opts(dpi = 96)
 
@@ -36,7 +55,20 @@ PARTY_ORDER <- c(
   "KKP"
 )
 
-theme_plots <- function(base_size = 16, base_family = "Jost") {
+# Ideological left -> right ordering for the hemicycle (left side to right side)
+HEMICYCLE_ORDER <- c(
+  "Razem",
+  "Lewica",
+  "KO",
+  "Polska 2050",
+  "PSL",
+  "MN",
+  "PiS",
+  "Konfederacja",
+  "KKP"
+)
+
+theme_plots <- function(base_size = 16, base_family = PLOT_FONT) {
   theme_bw(base_size, base_family) +
     theme(
       panel.background = element_rect(fill = "#ffffff", colour = NA),
@@ -332,7 +364,7 @@ allocate_seats_with_coalitions <- function(
 
   # Add coalitions
   for (coal in coalitions) {
-    name <- paste(short_names[coal], collapse = " + ")
+    name <- paste(short_names[coal], collapse = "-")
     entities[[length(entities) + 1]] <- list(
       name = name,
       members = coal,
@@ -449,12 +481,151 @@ coalition_color <- function(members, vote_shares_pct = NULL) {
   PARTY_COLORS[members[1]]
 }
 
-# Initial seat data: all parties with 0 seats (before simulation is run)
-sim_initial_seats <- data.frame(
-  party = setdiff(SIM_PARTIES, "Other"),
-  seats = 0L,
-  stringsAsFactors = FALSE
+# --- Ideological "punishment" model (Realistic seat projection) ---
+# Each party sits on a 0-100 left -> right ideology scale. When parties form an
+# electoral coalition with ideologically distant partners, some of their own
+# voters abstain ("punishment"). The loss scales with the squared distance to
+# the FURTHEST coalition partner, so extreme pairings (e.g. Razem + KKP) are
+# penalised heavily while adjacent ones (e.g. PSL + Polska 2050) barely at all.
+IDEOLOGY_POSITIONS <- c(
+  "Razem" = 0,
+  "Lewica" = 14,
+  "KO" = 32,
+  "Polska 2050" = 44,
+  "PSL" = 52,
+  "PiS" = 66,
+  "Konfederacja" = 84,
+  "KKP" = 100
 )
+# Fraction of a party's own vote lost at maximum ideological distance (dist=100)
+# and maximum coalitional-dynamics strength (slider = 1): three quarters.
+PUNISH_MAX_LOSS <- 0.75
+
+# Given national vote shares (named %, incl. MN/Other), the coalition
+# definitions, and a strength in [0, 1] (the "Coalitional dynamics" slider),
+# return adjusted shares where coalition members lose a share of their own vote
+# to abstention (added to "Other"). Solo parties are unchanged.
+# Loss fraction = strength * PUNISH_MAX_LOSS * (distance_to_furthest / 100)^2.
+# strength = 0 reproduces the unpunished ("naive") shares exactly.
+punish_vote_shares <- function(vote_shares_pct, coalitions, strength = 1) {
+  if (length(coalitions) == 0 || strength <= 0) {
+    return(vote_shares_pct)
+  }
+  adjusted <- vote_shares_pct
+  total_lost <- 0
+  for (coal in coalitions) {
+    # Parties with a defined ideological position (MN has none -> not punished)
+    positioned <- coal[coal %in% names(IDEOLOGY_POSITIONS)]
+    if (length(positioned) < 2) {
+      next
+    }
+    pos <- IDEOLOGY_POSITIONS[positioned]
+    for (p in positioned) {
+      furthest <- max(abs(pos - pos[p]))
+      loss_frac <- strength * PUNISH_MAX_LOSS * (furthest / 100)^2
+      orig <- adjusted[p]
+      if (is.na(orig) || orig <= 0) {
+        next
+      }
+      lost <- orig * loss_frac
+      adjusted[p] <- orig - lost
+      total_lost <- total_lost + lost
+    }
+  }
+  if ("Other" %in% names(adjusted)) {
+    adjusted["Other"] <- adjusted["Other"] + total_lost
+  }
+  adjusted
+}
+
+# Incompatible coalition partners (cannot sit in the same government).
+FORBIDDEN_PAIRS <- list(
+  c("Konfederacja", "Lewica"),
+  c("Konfederacja", "Razem"),
+  c("KKP", "Lewica"),
+  c("KKP", "Razem"),
+  c("KKP", "KO"),
+  c("PiS", "KO"),
+  c("PiS", "Lewica")
+)
+
+# Are a set of parties mutually compatible (no forbidden pair present)?
+parties_compatible <- function(parties) {
+  for (fp in FORBIDDEN_PAIRS) {
+    if (all(fp %in% parties)) {
+      return(FALSE)
+    }
+  }
+  TRUE
+}
+
+# Vote-weighted mean ideological position of a set of parties.
+ideology_of <- function(parties, vals) {
+  pos <- IDEOLOGY_POSITIONS[parties]
+  pos <- pos[!is.na(pos)]
+  if (length(pos) == 0) {
+    return(NA_real_)
+  }
+  w <- vals[names(pos)]
+  w[is.na(w) | w < 0] <- 0
+  if (sum(w) == 0) {
+    return(mean(pos))
+  }
+  sum(pos * w) / sum(w)
+}
+
+# Compute hemicycle seat coordinates for a vector of seats (one element per
+# seat, in left -> right order). Returns a data frame with x, y per seat.
+# Seats are arranged in concentric rows of a half-annulus.
+hemicycle_layout <- function(n_seats, n_rows = 11) {
+  if (n_seats <= 0) {
+    return(data.frame(x = numeric(0), y = numeric(0), seat = integer(0)))
+  }
+  # Distribute seats across rows proportionally to each row's radius (outer
+  # rows are longer, so they hold more seats).
+  r_inner <- 1
+  r_outer <- 2
+  radii <- seq(r_inner, r_outer, length.out = n_rows)
+  row_weights <- radii
+  row_counts <- floor(n_seats * row_weights / sum(row_weights))
+  # Distribute any remainder to the outer rows
+  rem <- n_seats - sum(row_counts)
+  if (rem > 0) {
+    add_order <- order(-radii)
+    for (k in seq_len(rem)) {
+      row_counts[add_order[((k - 1) %% n_rows) + 1]] <-
+        row_counts[add_order[((k - 1) %% n_rows) + 1]] + 1
+    }
+  }
+
+  coords <- list()
+  for (ri in seq_len(n_rows)) {
+    nc <- row_counts[ri]
+    if (nc == 0) {
+      next
+    }
+    r <- radii[ri]
+    # Angles from pi (left) to 0 (right)
+    if (nc == 1) {
+      angs <- pi / 2
+    } else {
+      angs <- seq(pi, 0, length.out = nc)
+    }
+    coords[[ri]] <- data.frame(
+      x = r * cos(angs),
+      y = r * sin(angs),
+      ang = angs,
+      r = r
+    )
+  }
+  pts <- do.call(rbind, coords)
+  # Order seats left -> right: by decreasing angle (pi = left, 0 = right),
+  # then by radius so adjacent seats cluster.
+  pts <- pts[order(-pts$ang, pts$r), ]
+  pts$seat <- seq_len(nrow(pts))
+  rownames(pts) <- NULL
+  pts
+}
 
 # --- UI ---
 ui <- fluidPage(
@@ -612,6 +783,182 @@ ui <- fluidPage(
       text-align: right;
     }
 
+    /* --- Estimates + coalition builder layout --- */
+    .estimates-layout {
+      display: flex;
+      gap: 32px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+    .estimates-block { flex: 3 1 480px; }
+    .estimates-coalitions {
+      flex: 1 1 200px;
+      border-left: 1px solid #ddd;
+      padding-left: 24px;
+    }
+    .est-analysis {
+      margin-top: 14px;
+      max-width: 640px;
+    }
+    .est-analysis .coalition-entry {
+      padding: 4px 0;
+      border-bottom: 1px solid #eee;
+      font-size: 0.92em;
+    }
+    .est-analysis .coalition-entry:last-child { border-bottom: none; }
+    .est-analysis .coalition-name { color: #333; }
+    .est-analysis .coalition-seats { font-weight: bold; }
+    /* Coalitional dynamics vertical slider */
+    .coalition-dynamics { margin-top: 18px; }
+    .coalition-dynamics-title {
+      font-size: 1.3rem;
+      font-weight: bold;
+      margin-bottom: 4px;
+    }
+    .coalition-dynamics-help {
+      color: #999;
+      font-size: 0.78em;
+      margin-bottom: 8px;
+    }
+    /* Native vertical range input (0 at the bottom, 100 at the top).
+       Native inputs track the trackpad smoothly, unlike a rotated slider. */
+    .coalition-dynamics-slider {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      gap: 8px;
+      margin-top: 8px;
+      margin-left: 8px;
+      width: fit-content;
+    }
+    .vertical-range {
+      writing-mode: vertical-lr;
+      direction: rtl;            /* low at bottom, high at top */
+      -webkit-appearance: slider-vertical;
+      appearance: slider-vertical;
+      flex: 0 0 24px;
+      width: 24px;
+      height: 200px;
+      margin: 0;
+      cursor: pointer;
+      accent-color: #333;
+    }
+    .vertical-range-value {
+      font-size: 0.95em;
+      font-weight: normal;
+      color: #333;
+      flex: 0 0 auto;
+    }
+    /* Columns of editable party estimates */
+    .est-columns {
+      display: flex;
+      gap: 24px;
+      flex-wrap: wrap;
+      align-items: flex-start;
+    }
+    .est-col {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .est-coal-col, .est-solo-col {
+      border: 1px solid #eee;
+      border-radius: 6px;
+      padding: 8px 10px;
+      background: #fafafa;
+    }
+    .est-coal-header {
+      display: flex;
+      align-items: center;
+      font-weight: bold;
+      font-size: 0.9em;
+      margin-bottom: 4px;
+    }
+    .est-solo-header { color: #777; }
+    .est-coal-total {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      margin-top: 6px;
+      padding-top: 6px;
+      border-top: 1px solid #ddd;
+      font-size: 0.9em;
+    }
+    .est-coal-total-label { font-weight: bold; min-width: 70px; }
+    .est-coal-total-vote { color: #888; }
+    .est-coal-total-seats { font-weight: bold; }
+    .est-entry {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 2px 0;
+    }
+    .est-party {
+      display: flex;
+      align-items: center;
+      min-width: 96px;
+      white-space: nowrap;
+      font-size: 0.9em;
+    }
+    .est-vote-box { width: 64px; }
+    .est-vote-box .form-group { margin-bottom: 0; }
+    .est-vote-box input[type=number] {
+      font-size: 0.82em;
+      padding: 3px 5px;
+    }
+    .est-pct { font-size: 0.85em; color: #888; }
+    .est-seats {
+      font-weight: bold;
+      min-width: 34px;
+      text-align: right;
+      font-size: 0.9em;
+    }
+    .est-seats-label { font-size: 0.78em; color: #999; }
+
+    /* --- Seat projection layout --- */
+    .projection-layout {
+      display: flex;
+      gap: 24px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+    }
+    .hemicycle-wrapper {
+      flex: 1 1 420px;
+      max-width: 520px;
+    }
+    /* Label sits below the hemicycle, clear of the arch */
+    .hemicycle-label-wrap {
+      display: flex;
+      justify-content: center;
+      margin-top: 8px;
+    }
+    .hemicycle-label {
+      text-align: center;
+      font-size: 0.95em;
+      padding: 2px 8px;
+    }
+    .hemicycle-label-title {
+      font-size: 0.78em;
+      color: #999;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 2px;
+    }
+    .hemicycle-label-none { color: #999; padding-top: 4px; }
+    .hemicycle-win-line { padding: 1px 0; }
+    .hemicycle-win-name { font-weight: bold; }
+    .hemicycle-win-seats { color: #333; }
+    .hemicycle-win-extra { color: green; font-size: 0.85em; }
+
+    @media (max-width: 768px) {
+      .estimates-coalitions {
+        border-left: none;
+        border-top: 1px solid #ddd;
+        padding-left: 0;
+        padding-top: 16px;
+      }
+    }
+
     /* --- Simulator styles --- */
     .sim-section {
       margin-top: 40px;
@@ -647,12 +994,12 @@ ui <- fluidPage(
       color: #888;
     }
     .sim-total {
+      display: inline-block;
       font-size: 0.95em;
       margin: 8px 0;
       padding: 6px 10px;
       border-radius: 4px;
     }
-    .sim-total-ok { background: #e8f5e9; }
     .sim-total-bad { background: #ffebee; }
     .sim-seat-list {
       min-width: 180px;
@@ -858,6 +1205,11 @@ ui <- fluidPage(
       if (e.name === 'agency_selector') setTimeout(updateAgencyChips, 50);
     });
     $(function() { setTimeout(updateAgencyChips, 200); });
+
+    // Coalitional dynamics: update the value label as the range moves
+    $(document).on('input change', '#coalition_dynamics', function() {
+      $('.vertical-range-value').text(this.value + '%');
+    });
   "
     ))
   ),
@@ -886,12 +1238,96 @@ ui <- fluidPage(
       ),
       uiOutput("point_tooltip")
     ),
+
+    # --- Editable estimates + coalition buttons (side by side) ---
     div(
+      class = "estimates-layout",
       style = "margin-top: 20px;",
-      uiOutput("click_info")
+      div(
+        class = "estimates-block",
+        uiOutput("estimates_heading"),
+        tags$p(
+          style = "color:#999; font-size:0.75em; margin:6px 0 12px 0;",
+          "Edit any vote share to override the polling-derived estimate.",
+          "Seats recompute automatically. Click the trend plot to reset to a date."
+        ),
+        uiOutput("est_inputs_ui"),
+        uiOutput("est_total_display"),
+        uiOutput("est_analysis")
+      ),
+      div(
+        class = "estimates-coalitions",
+        tags$div(class = "coalition-dynamics-title", "Coalition formation"),
+        div(
+          style = "display:flex; gap:8px; flex-wrap:wrap; margin-top:4px;",
+          tags$button(
+            class = "coalition-btn",
+            onclick = "openCoalitionModal();",
+            "Build coalition"
+          ),
+          actionButton(
+            "coalition_reset_btn",
+            "Reset",
+            class = "coalition-btn"
+          )
+        ),
+        div(
+          class = "coalition-dynamics",
+          tags$div(class = "coalition-dynamics-title", "Coalition dynamics"),
+          tags$p(
+            class = "coalition-dynamics-help",
+            "How strongly voters punish their party for allying with",
+            "ideologically distant partners. At 0% there is no effect. At 100%,",
+            "parties furthest apart ideologically lose three quarters of their",
+            "electorate; parties closer together are punished too, but less so."
+          ),
+          div(
+            class = "coalition-dynamics-slider",
+            tags$input(
+              id = "coalition_dynamics",
+              type = "range",
+              min = "0",
+              max = "100",
+              value = "0",
+              step = "1",
+              class = "vertical-range",
+              oninput = "Shiny.setInputValue('coalition_dynamics', parseInt(this.value));",
+              onchange = "Shiny.setInputValue('coalition_dynamics', parseInt(this.value));"
+            ),
+            tags$div(class = "vertical-range-value", "0%")
+          )
+        )
+      )
     ),
 
-    # Coalition builder modal (shared between trend popup and simulator)
+    # --- Seat projection (hemicycle + constituency map), slider-driven ---
+    div(
+      style = "margin-top: 24px;",
+      div(
+        class = "projection-layout",
+        div(
+          class = "hemicycle-wrapper",
+          div(
+            class = "hemicycle-plot-area",
+            style = "position: relative;",
+            plotOutput(
+              "proj_hemicycle_plot",
+              click = "proj_hemicycle_click",
+              width = "100%",
+              height = "300px"
+            ),
+            uiOutput("proj_hemicycle_popup")
+          ),
+          div(
+            class = "hemicycle-label-wrap",
+            uiOutput("proj_hemicycle_label")
+          )
+        ),
+        uiOutput("proj_map_ui")
+      )
+    ),
+
+    # Coalition builder modal
     div(
       id = "coalition-modal",
       class = "coalition-modal-overlay",
@@ -921,31 +1357,6 @@ ui <- fluidPage(
           )
         )
       )
-    ),
-
-    # --- Simulator ---
-    div(
-      class = "sim-section",
-      tags$h4(style = "margin-top:0;", "Seat simulator"),
-      uiOutput("sim_description"),
-      div(
-        class = "popup-layout",
-        div(
-          style = "display:flex; gap:32px;",
-          div(
-            class = "sim-inputs",
-            uiOutput("sim_inputs_ui"),
-            uiOutput("sim_total_display")
-          ),
-          div(
-            class = "sim-seat-list",
-            uiOutput("sim_results_ui")
-          )
-        ),
-        uiOutput("sim_coalitions_ui"),
-        uiOutput("sim_map_ui")
-      ),
-      uiOutput("sim_weighting_note")
     )
   )
 )
@@ -1006,9 +1417,10 @@ build_coalitions <- function(get_seats_fn) {
     )
   }
 
-  # Enumerate multi-party coalitions (2+ parties)
-  if (length(active_parties) >= 2) {
-    for (size in 2:length(active_parties)) {
+  # Enumerate multi-party coalitions (2+ parties), but never every party at
+  # once -- a coalition must leave at least one party in opposition.
+  if (length(active_parties) >= 3) {
+    for (size in 2:(length(active_parties) - 1)) {
       combos <- combn(active_parties, size, simplify = FALSE)
       for (combo in combos) {
         # Skip coalitions that are supersets of a single-party majority
@@ -1021,7 +1433,7 @@ build_coalitions <- function(get_seats_fn) {
         total_seats <- sum(sapply(combo, get_seats_fn))
         if (total_seats >= 231) {
           coalitions[[length(coalitions) + 1]] <- list(
-            name = paste(short_names[combo], collapse = " + "),
+            name = paste(short_names[combo], collapse = " & "),
             seats = total_seats,
             parties = combo
           )
@@ -1031,153 +1443,184 @@ build_coalitions <- function(get_seats_fn) {
   }
 
   # Sort by seats descending
+  if (length(coalitions) == 0) {
+    return(coalitions)
+  }
   coalitions[order(-sapply(coalitions, function(x) x$seats))]
 }
 
-build_popup_html <- function(
-  snapped_date,
-  date_label = NULL,
-  weekly_data = weekly_summaries,
-  show_ci = TRUE
-) {
-  day_data <- weekly_data %>%
-    filter(date == snapped_date) %>%
-    arrange(desc(median_pct))
+# Short display names for parties (used in coalition labels)
+PARTY_SHORT <- c(
+  "KO" = "KO",
+  "Polska 2050" = "P2050",
+  "Lewica" = "Lewica",
+  "PSL" = "PSL",
+  "PiS" = "PiS",
+  "Konfederacja" = "Konf.",
+  "KKP" = "KKP",
+  "Razem" = "Razem",
+  "MN" = "MN"
+)
 
-  if (nrow(day_data) == 0) {
-    return(NULL)
-  }
-
-  if (show_ci) {
-    entries <- day_data %>%
-      rowwise() %>%
-      mutate(
-        color_hex = PARTY_COLORS[as.character(party)],
-        entry_html = paste0(
-          "<div class='popup-entry'>",
-          "<div class='popup-party-name'><span class='color-dot' style='background:",
-          color_hex,
-          ";'></span>",
-          party,
-          "</div>",
-          "<div class='popup-row'>",
-          "<span class='popup-label'>votes</span>",
-          "<span class='popup-est'>",
-          median_pct,
-          "%</span>",
-          "<span class='popup-ci'>(",
-          lower_pct,
-          "% \u2013 ",
-          upper_pct,
-          "%)</span>",
-          "</div>",
-          "<div class='popup-row'>",
-          "<span class='popup-label'>seats</span>",
-          "<span class='popup-est'>",
-          median_seats,
-          "</span>",
-          "<span class='popup-ci'>(",
-          lower_seats,
-          " \u2013 ",
-          upper_seats,
-          ")</span>",
-          "</div></div>"
-        )
-      ) %>%
-      pull(entry_html)
-  } else {
-    entries <- day_data %>%
-      rowwise() %>%
-      mutate(
-        color_hex = PARTY_COLORS[as.character(party)],
-        entry_html = paste0(
-          "<div class='popup-entry'>",
-          "<div class='popup-party-name'><span class='color-dot' style='background:",
-          color_hex,
-          ";'></span>",
-          party,
-          "</div>",
-          "<div class='popup-row'>",
-          "<span class='popup-label'>votes</span>",
-          "<span class='popup-est'>",
-          median_pct,
-          "%</span>",
-          "</div>",
-          "<div class='popup-row'>",
-          "<span class='popup-label'>seats</span>",
-          "<span class='popup-est'>",
-          median_seats,
-          "</span>",
-          "</div></div>"
-        )
-      ) %>%
-      pull(entry_html)
-  }
-
-  get_seats <- function(p) {
-    val <- day_data$median_seats[as.character(day_data$party) == p]
+# Build governing majorities from a national seat table, accounting for any
+# electoral coalitions. `national` is a data frame with columns party, seats
+# (where party may be a coalition entity name like "KO + P2050"). `coals` is
+# the list of coalition member-vectors. Returns a list of governing
+# majorities, each with $name, $seats, $parties (entity names).
+build_coalitions_entities <- function(national, coals) {
+  get_s <- function(p) {
+    val <- national$seats[national$party == p]
     if (length(val) == 0) 0L else val
   }
-  gov_coalitions <- build_coalitions(get_seats)
 
-  coalition_entries <- sapply(gov_coalitions, function(c) {
-    label <- if (c$seats >= 307) {
-      "<span class='coalition-majority' style='color:green;'>constitutional majority</span>"
-    } else if (c$seats >= 276) {
-      "<span class='coalition-majority' style='color:green;'>veto override</span>"
-    } else {
-      ""
+  if (length(coals) == 0) {
+    return(build_coalitions(get_s))
+  }
+
+  # Once the user has formed electoral coalitions, the ideological
+  # incompatibility rules no longer apply: any blocs (coalitions or leftover
+  # solo parties) may combine into a governing majority.
+
+  entity_names <- national$party[national$seats > 0]
+  gov_combos <- list()
+  if (length(entity_names) >= 1) {
+    # A coalition must leave at least one seat-winning bloc in opposition, so
+    # never include every entity (max size is one fewer than the total).
+    max_size <- max(1, length(entity_names) - 1)
+    for (size in 1:max_size) {
+      combos <- combn(entity_names, size, simplify = FALSE)
+      for (combo in combos) {
+        total <- sum(sapply(combo, get_s))
+        if (total >= 231) {
+          gov_combos[[length(gov_combos) + 1]] <- list(
+            name = paste(combo, collapse = " & "),
+            seats = total,
+            parties = combo
+          )
+        }
+      }
     }
-    paste0(
-      "<div class='coalition-entry'>",
-      "<div class='coalition-name'>",
-      c$name,
-      "</div>",
-      "<div><span class='coalition-seats'>",
-      c$seats,
-      " seats</span>",
-      label,
-      "</div></div>"
-    )
-  })
-
-  date_heading <- if (!is.null(date_label)) {
-    paste0("<h5>", date_label, "</h5>")
-  } else {
-    ""
   }
 
-  ci_note <- if (show_ci) {
-    "80% credible intervals are shown in brackets. Seat shares are median estimates and may not sum to 460."
-  } else {
-    "LOESS approximation based on selected agencies. Seat shares may not sum to 460."
-  }
-
-  list(
-    grid_html = paste0(
-      "<div>",
-      date_heading,
-      "<div class='popup-grid'>",
-      paste(entries, collapse = ""),
-      "</div>",
-      "<p style='margin-bottom:0; margin-top:8px; color:#999; font-size:0.75em;'>",
-      ci_note,
-      "</p>",
-      "</div>"
-    ),
-    coalition_html = paste0(
-      "<div class='popup-coalitions'>",
-      "<h5>Governing majorities</h5>",
-      paste(coalition_entries, collapse = ""),
-      "</div>"
-    )
+  single_maj <- entity_names[sapply(entity_names, function(p) {
+    get_s(p) >= 231
+  })]
+  gov_combos <- Filter(
+    function(x) {
+      if (length(x$parties) == 1) {
+        return(TRUE)
+      }
+      !any(single_maj %in% x$parties)
+    },
+    gov_combos
   )
+
+  if (length(gov_combos) == 0) {
+    return(gov_combos)
+  }
+  gov_combos[order(-sapply(gov_combos, function(x) x$seats))]
+}
+
+# Among governing majorities (output of build_coalitions* ), pick the minimal
+# winning coalition: fewest parties, breaking ties by fewest seats. Returns
+# NULL if there are no governing majorities.
+minimal_winning_coalition <- function(gov_coalitions) {
+  if (length(gov_coalitions) == 0) {
+    return(NULL)
+  }
+  n_parties <- sapply(gov_coalitions, function(x) length(x$parties))
+  seats <- sapply(gov_coalitions, function(x) x$seats)
+  # fewest parties first, then fewest seats
+  idx <- order(n_parties, seats)[1]
+  gov_coalitions[[idx]]
 }
 
 # --- Server ---
 server <- function(input, output, session) {
   selected_date <- reactiveVal(max(available_dates))
   selected_constituency <- reactiveVal(NULL)
+
+  # --- Editable vote/seat estimates ---
+  # The numeric vote inputs are the single source of truth for vote shares.
+  # Clicking a new date on the trend plot re-seeds them (see plot_click), so
+  # user edits persist until the next date click.
+
+  # Editable parties (everything except Other, which is a residual)
+  EST_PARTIES <- setdiff(SIM_PARTIES, "Other")
+
+  # Median-derived default vote shares for a given date, with MN hardcoded
+  # to 0.8% and Other taking the remainder (mirrors sim_defaults logic).
+  est_default_shares <- function(date) {
+    d <- weekly_summaries %>%
+      filter(date == !!date) %>%
+      select(party, median_pct)
+    shares <- setNames(rep(0, length(SIM_PARTIES)), SIM_PARTIES)
+    for (p in PARTY_ORDER) {
+      v <- d$median_pct[as.character(d$party) == p]
+      if (length(v) > 0) {
+        shares[p] <- v
+      }
+    }
+    shares["MN"] <- 0.8
+    shares["Other"] <- round(
+      100 - sum(shares[setdiff(SIM_PARTIES, "Other")]),
+      1
+    )
+    shares
+  }
+
+  # Read the live numeric inputs; fall back to the selected date's defaults
+  # for any input that hasn't rendered yet.
+  est_input_values <- reactive({
+    vals <- est_default_shares(selected_date())
+    for (p in EST_PARTIES) {
+      v <- input[[paste0("est_", gsub(" ", "_", p))]]
+      if (!is.null(v) && !is.na(v)) {
+        vals[p] <- v
+      }
+    }
+    vals["Other"] <- round(100 - sum(vals[setdiff(SIM_PARTIES, "Other")]), 1)
+    vals
+  })
+
+  # Raw vote shares as entered
+  est_vote_shares <- reactive({
+    vals <- est_input_values()
+    setNames(as.numeric(vals[SIM_PARTIES]), SIM_PARTIES)
+  })
+
+  # Coalitional-dynamics strength from the slider (0 = no punishment, 1 = max)
+  punish_strength <- reactive({
+    s <- input$coalition_dynamics
+    if (is.null(s)) 0 else s / 100
+  })
+
+  # Effective vote shares after the coalitional-dynamics punishment. At
+  # strength 0 these equal the raw entered shares (so the projection is naive).
+  effective_vote_shares <- reactive({
+    punish_vote_shares(est_vote_shares(), coalition_defs(), punish_strength())
+  })
+
+  # Whether the entered vote shares are within tolerance (1 pp of 100).
+  vote_total_ok <- reactive({
+    abs(sum(est_input_values()[EST_PARTIES]) - 100) <= 1
+  })
+
+  # Seat allocation. While the vote total is out of tolerance we "do not
+  # proceed": the projection holds its last valid state until the user fixes it.
+  est_seat_data_cache <- reactiveVal(NULL)
+  est_seat_data <- reactive({
+    if (vote_total_ok()) {
+      result <- allocate_seats_with_coalitions(
+        effective_vote_shares(),
+        coalition_defs()
+      )
+      est_seat_data_cache(result)
+      result
+    } else {
+      est_seat_data_cache()
+    }
+  })
 
   # --- Agency selector ---
   # Which agencies are highlighted (empty = show all)
@@ -1190,7 +1633,8 @@ server <- function(input, output, session) {
   output$trend_description <- renderUI({
     tags$p(
       style = "color:#999; font-size:0.85em; max-width:810px; margin-bottom:8px;",
-      "Click anywhere on the plot to see vote and seat estimates for the nearest week.",
+      "Click anywhere on the plot to load vote and seat estimates for the nearest week",
+      "into the editable block below.",
       "Hover over any of the points to see particular polling house estimates.",
       "Click on one or more polling agencies below to highlight their polls on the chart."
     )
@@ -1218,8 +1662,6 @@ server <- function(input, output, session) {
       "coalition_picker",
       selected = character(0)
     )
-    # Reset simulator state when coalitions change
-    sim_has_run(FALSE)
     selected_constituency(NULL)
   })
 
@@ -1229,9 +1671,14 @@ server <- function(input, output, session) {
     if (idx >= 1 && idx <= length(current)) {
       current[[idx]] <- NULL
       coalition_defs(current)
-      sim_has_run(FALSE)
       selected_constituency(NULL)
     }
+  })
+
+  # Reset all coalitions: return to the default of all parties separate
+  observeEvent(input$coalition_reset_btn, {
+    coalition_defs(list())
+    selected_constituency(NULL)
   })
 
   # Render current coalitions list in modal
@@ -1311,8 +1758,19 @@ server <- function(input, output, session) {
   observeEvent(input$plot_click, {
     clicked_date <- as.Date(input$plot_click$x, origin = "1970-01-01")
     idx <- which.min(abs(available_dates - clicked_date))
-    selected_date(available_dates[idx])
+    new_date <- available_dates[idx]
+    selected_date(new_date)
     selected_constituency(NULL)
+    # Re-seed the editable vote inputs from the new date's medians,
+    # overriding any prior user edits.
+    defaults <- est_default_shares(new_date)
+    for (p in EST_PARTIES) {
+      updateNumericInput(
+        session,
+        paste0("est_", gsub(" ", "_", p)),
+        value = round(defaults[p], 1)
+      )
+    }
   })
 
   output$trend_plot <- renderPlot(
@@ -1421,498 +1879,650 @@ server <- function(input, output, session) {
     )
   })
 
-  output$click_info <- renderUI({
-    popup_html <- build_popup_html(
-      selected_date(),
-      date_label = format(selected_date(), "%e %B %Y"),
-      weekly_data = weekly_summaries,
-      show_ci = TRUE
-    )
-    if (is.null(popup_html)) {
+  # --- National seat summary (entity-aware) ---
+  # --- Projection helpers (shared by the naive and realistic projections) ---
+  # These are plain functions of (seat_data, coals, vals) so both projections
+  # can reuse them without duplicating reactive logic.
+
+  national_from <- function(seat_data) {
+    if (is.null(seat_data)) {
       return(NULL)
     }
+    seat_data %>%
+      group_by(party) %>%
+      summarise(seats = sum(seats), .groups = "drop") %>%
+      arrange(desc(seats))
+  }
 
-    div(
-      class = "popup-layout",
-      HTML(popup_html$grid_html),
-      HTML(popup_html$coalition_html),
-      div(
-        class = "popup-map",
-        tags$h5("Constituency seat shares"),
-        div(
-          style = "position: relative;",
-          plotOutput(
-            "seat_map",
-            click = "map_click",
-            width = "250px",
-            height = "280px"
-          ),
-          uiOutput("map_popup")
-        ),
-        tags$p(
-          style = "margin:4px 0 0 0; color:#999; font-size:0.75em; max-width:250px;",
-          "Click on the map for seat shares in specific constituencies."
-        )
-      )
-    )
-  })
-
-  # --- Map ---
-  trend_const_seats <- reactive({
-    constituency_seats %>% filter(date == selected_date())
-  })
-
-  map_data <- reactive({
-    cs <- trend_const_seats()
-    if (is.null(cs) || nrow(cs) == 0) {
+  # Central projection summary used by the estimates block, hemicycle and maps.
+  # Returns a list with:
+  #   entities    list of {name, members, is_coalition, vote, seats,
+  #                         member_seats (named vector), color}
+  #   colors      named vector mapping entity name -> display colour
+  #               (coalitions take the colour of their largest member BY SEATS)
+  #   national    entity -> seats data frame
+  compute_projection <- function(national, coals, vals) {
+    if (is.null(national)) {
       return(NULL)
     }
+    coal_members_all <- unlist(coals)
 
-    # Get total seats and winning party per constituency
-    totals <- cs %>%
-      group_by(okreg) %>%
-      summarise(total_seats = sum(median_seats), .groups = "drop")
+    seat_of <- function(entity) {
+      v <- national$seats[national$party == entity]
+      if (length(v) == 0) 0L else v
+    }
 
-    winners <- cs %>%
-      group_by(okreg) %>%
-      slice_max(median_seats, n = 1, with_ties = FALSE) %>%
-      ungroup() %>%
-      select(okreg, winning_party = party, winning_seats = median_seats) %>%
-      left_join(totals, by = "okreg") %>%
-      mutate(
-        dominance = ifelse(total_seats > 0, winning_seats / total_seats, 0),
-        winning_party = ifelse(winning_seats == 0, NA_character_, winning_party)
+    # Split a coalition's seats back to members by vote share (largest remainder)
+    split_seats <- function(members, coal_seats) {
+      shares <- vals[members]
+      tot <- sum(shares, na.rm = TRUE)
+      if (tot == 0 || coal_seats == 0) {
+        return(setNames(rep(0L, length(members)), members))
+      }
+      raw <- coal_seats * shares / tot
+      base_n <- floor(raw)
+      rem <- coal_seats - sum(base_n)
+      if (rem > 0) {
+        add <- order(-(raw - base_n))[seq_len(rem)]
+        base_n[add] <- base_n[add] + 1
+      }
+      setNames(as.integer(base_n), members)
+    }
+
+    entities <- list()
+    cols <- PARTY_COLORS
+
+    # Coalition entities
+    for (coal in coals) {
+      name <- paste(PARTY_SHORT[coal], collapse = "-")
+      seats <- seat_of(name)
+      member_seats <- split_seats(coal, seats)
+      # Colour by largest member BY SEATS (tie -> by vote share)
+      ms <- member_seats
+      ord <- order(-ms, -vals[coal])
+      largest <- coal[ord[1]]
+      col <- PARTY_COLORS[largest]
+      cols[name] <- col
+      entities[[length(entities) + 1]] <- list(
+        name = name,
+        members = coal,
+        is_coalition = TRUE,
+        vote = sum(vals[coal], na.rm = TRUE),
+        seats = seats,
+        member_seats = member_seats,
+        color = col
       )
+    }
 
-    md <- merge(const_map, winners, by.x = "id", by.y = "okreg", all.x = TRUE)
+    # Solo party entities (incl. MN), not in any coalition
+    solo <- setdiff(EST_PARTIES, coal_members_all)
+    for (p in solo) {
+      seats <- seat_of(p)
+      entities[[length(entities) + 1]] <- list(
+        name = p,
+        members = p,
+        is_coalition = FALSE,
+        vote = as.numeric(vals[p]),
+        seats = seats,
+        member_seats = setNames(seats, p),
+        color = PARTY_COLORS[p]
+      )
+    }
 
-    # Compute blended fill colour (party colour -> white based on dominance)
-    md$fill_color <- mapply(
-      function(party, dom) {
-        if (is.na(party)) {
-          return("grey80")
+    list(entities = entities, colors = cols, national = national)
+  }
+
+  # The "winning" coalition for the hemicycle label, matching the highlight:
+  #  - no user coalitions: the minimal winning coalition
+  #  - user coalitions defined: the largest governing majority
+  # Returns list(winners = list of gov-coalition objects, tie = logical).
+  # Pick the "winning coalition" to highlight. Always returns a coalition when
+  # one is possible, regardless of whether electoral coalitions exist.
+  #   national : data frame party -> seats (entity names when coalitions exist)
+  #   vals     : named vote shares (for vote-weighted ideological positions)
+  #   coals    : the electoral-coalition definitions
+  #   gov      : enumerated compatible governing majorities (>= 231)
+  compute_winner <- function(gov, coals, national, vals) {
+    if (is.null(national) || nrow(national) == 0) {
+      return(list(winners = list(), tie = FALSE))
+    }
+    seat_of <- function(p) {
+      v <- national$seats[national$party == p]
+      if (length(v) == 0) 0L else v
+    }
+
+    if (length(coals) == 0) {
+      # --- Single parties: build outward from the largest party by adjacency ---
+      parties <- intersect(names(IDEOLOGY_POSITIONS), national$party)
+      parties <- parties[sapply(parties, seat_of) > 0]
+      if (length(parties) == 0) {
+        return(list(winners = list(), tie = FALSE))
+      }
+      # Largest party by seats
+      start <- parties[order(-sapply(parties, seat_of))][1]
+      bloc <- start
+      total <- seat_of(start)
+      repeat {
+        if (total >= 231) {
+          break
         }
-        col <- PARTY_COLORS[party]
-        if (is.na(col)) {
-          col <- "gray50"
+        # Candidates: compatible, not yet in bloc, with seats
+        cand <- setdiff(parties, bloc)
+        cand <- cand[sapply(cand, function(p) parties_compatible(c(bloc, p)))]
+        if (length(cand) == 0) {
+          break
         }
-        base <- col2rgb(col) / 255
-        blended <- base + (1 - base) * (1 - dom)
-        rgb(blended[1], blended[2], blended[3])
-      },
-      md$winning_party,
-      md$dominance
-    )
-
-    md
-  })
-
-  output$seat_map <- renderPlot(
-    {
-      showtext_opts(dpi = 96)
-      md <- map_data()
-      if (is.null(md)) {
-        return(NULL)
+        # Most ideologically adjacent to the current bloc (vote-weighted centre)
+        centre <- ideology_of(bloc, vals)
+        dist <- abs(IDEOLOGY_POSITIONS[cand] - centre)
+        nearest <- cand[order(dist, -sapply(cand, seat_of))][1]
+        bloc <- c(bloc, nearest)
+        total <- total + seat_of(nearest)
       }
 
-      fill_vals <- setNames(md$fill_color, md$id)
-      ggplot(md) +
-        geom_sf(
-          aes(fill = as.character(id)),
-          color = "white",
-          linewidth = 0.2
-        ) +
-        scale_fill_manual(values = fill_vals, na.value = "grey80") +
-        theme_void(base_family = "Jost") +
-        theme(
-          legend.position = "none",
-          plot.margin = unit(c(0, 0, 0, 0), "cm")
-        )
-    },
-    res = 96
-  )
+      if (total < 231) {
+        # Greedy got stuck (a nearby addition blocked a later partner). Fall
+        # back to the enumerated winning coalition that includes the largest
+        # party, choosing fewest parties then smallest ideological spread.
+        with_start <- Filter(function(g) start %in% g$parties, gov)
+        if (length(with_start) == 0) {
+          return(list(winners = list(), tie = FALSE))
+        }
+        spread <- function(g) {
+          pos <- IDEOLOGY_POSITIONS[g$parties]
+          pos <- pos[!is.na(pos)]
+          if (length(pos) <= 1) 0 else max(pos) - min(pos)
+        }
+        np <- sapply(with_start, function(g) length(g$parties))
+        sp <- sapply(with_start, spread)
+        primary <- with_start[[order(np, sp)[1]]]
+        return(list(winners = list(primary), tie = FALSE))
+      }
 
-  observeEvent(input$map_click, {
-    md <- map_data()
-    if (is.null(md)) {
-      return()
+      # Order bloc by ideology for the display name
+      bloc <- bloc[order(IDEOLOGY_POSITIONS[bloc])]
+      primary <- list(
+        name = paste(PARTY_SHORT[bloc], collapse = " & "),
+        seats = total,
+        parties = bloc
+      )
+      return(list(winners = list(primary), tie = FALSE))
     }
 
-    click_point <- sf::st_point(c(input$map_click$x, input$map_click$y))
-    click_sfc <- sf::st_sfc(click_point, crs = sf::st_crs(md))
-    hit <- sf::st_intersects(click_sfc, md)
-
-    if (length(hit[[1]]) > 0) {
-      selected_constituency(md$id[hit[[1]][1]])
-    } else {
-      selected_constituency(NULL)
+    # --- Electoral coalitions present ---
+    if (length(gov) == 0) {
+      return(list(winners = list(), tie = FALSE))
     }
+    # Map entity name -> member parties (coalition entities or solo parties)
+    entity_members <- list()
+    for (coal in coals) {
+      entity_members[[paste(PARTY_SHORT[coal], collapse = "-")]] <- coal
+    }
+    members_of <- function(ent) {
+      m <- entity_members[[ent]]
+      if (is.null(m)) ent else m
+    }
+
+    # Priority 1: a single electoral coalition that holds a majority alone
+    single_blocs <- Filter(function(g) length(g$parties) == 1, gov)
+    if (length(single_blocs) > 0) {
+      single_blocs <- single_blocs[order(
+        -sapply(single_blocs, function(g) g$seats)
+      )]
+      return(list(winners = list(single_blocs[[1]]), tie = FALSE))
+    }
+
+    # Priority 2: combine blocs with the smallest combined ideological spread,
+    # breaking ties by fewest blocs.
+    spread_of <- function(g) {
+      pos <- sapply(g$parties, function(ent) ideology_of(members_of(ent), vals))
+      pos <- pos[!is.na(pos)]
+      if (length(pos) <= 1) 0 else max(pos) - min(pos)
+    }
+    spreads <- sapply(gov, spread_of)
+    nblocs <- sapply(gov, function(g) length(g$parties))
+    primary <- gov[[order(spreads, nblocs)[1]]]
+    list(winners = list(primary), tie = FALSE)
+  }
+
+  # --- Naive projection reactives (vote shares as entered) ---
+  # Effective per-party vals (named, incl. Other) after the slider punishment,
+  # used for vote-total display and seat-splitting in the projection.
+  effective_vals <- reactive({
+    vals <- est_input_values()
+    full <- setNames(as.numeric(vals[names(vals)]), names(vals))
+    punish_vote_shares(full, coalition_defs(), punish_strength())
   })
 
-  output$map_popup <- renderUI({
-    const_id <- selected_constituency()
-    if (is.null(const_id)) {
-      return(NULL)
+  est_national <- reactive(national_from(est_seat_data()))
+  est_projection <- reactive(
+    compute_projection(est_national(), coalition_defs(), effective_vals())
+  )
+  est_colors <- reactive({
+    proj <- est_projection()
+    if (is.null(proj)) PARTY_COLORS else proj$colors
+  })
+  est_gov_coalitions <- reactive({
+    national <- est_national()
+    if (is.null(national)) {
+      list()
+    } else {
+      build_coalitions_entities(national, coalition_defs())
     }
+  })
+  est_mwc <- reactive(minimal_winning_coalition(est_gov_coalitions()))
+  est_winner <- reactive(
+    compute_winner(
+      est_gov_coalitions(),
+      coalition_defs(),
+      est_national(),
+      effective_vals()
+    )
+  )
 
-    cs <- trend_const_seats()
-    if (is.null(cs)) {
-      return(NULL)
+  # --- Editable vote/seat block (3-row grid) ---
+  output$estimates_heading <- renderUI({
+    tags$h4(
+      style = "margin-top:0; font-size:1.3rem; font-weight:bold;",
+      format(selected_date(), "%e %B %Y")
+    )
+  })
+
+  # A single editable party row: colour dot + name, vote input, seats
+  # show_seats = FALSE for coalition members, where an individual party's seat
+  # share within the joint list is unknowable (only the coalition total is shown).
+  est_party_row <- function(p, col, seats_val, show_seats = TRUE) {
+    if (is.na(col)) {
+      col <- "gray50"
     }
-
-    cs <- cs %>%
-      filter(okreg == const_id, median_seats > 0) %>%
-      arrange(desc(median_seats))
-
-    if (nrow(cs) == 0) {
-      return(NULL)
+    vals <- est_input_values()
+    seat_tags <- if (show_seats) {
+      list(
+        span(class = "est-seats", seats_val),
+        span(class = "est-seats-label", "seats")
+      )
+    } else {
+      list()
     }
-
-    # Get constituency name
-    const_name <- const_map$cst_n[const_map$id == const_id]
-    if (length(const_name) == 0) {
-      const_name <- paste("Constituency", const_id)
-    }
-
-    entries <- cs %>%
-      rowwise() %>%
-      mutate(
-        color_hex = {
-          col <- PARTY_COLORS[party]
-          if (is.na(col)) "gray50" else col
-        },
-        html = paste0(
-          "<div class='map-popup-entry'>",
-          "<span class='map-popup-party'><span class='color-dot' style='background:",
-          color_hex,
+    div(
+      class = "est-entry",
+      div(
+        class = "est-party",
+        HTML(paste0(
+          "<span class='color-dot' style='background:",
+          col,
           ";'></span>",
-          party,
-          "</span>",
-          "<span class='map-popup-seats'>",
-          median_seats,
-          "</span>",
-          "&nbsp;seats</div>"
-        )
-      ) %>%
-      pull(html)
-
-    # Position near the click
-    left_px <- input$map_click$coords_css$x
-    top_px <- input$map_click$coords_css$y
-
-    div(
-      class = "map-popup",
-      style = paste0("left:", left_px + 15, "px; top:", top_px + 15, "px;"),
-      HTML(paste0(
-        "<b>",
-        const_name,
-        "</b><br>",
-        paste(entries, collapse = "")
-      ))
-    )
-  })
-
-  # --- Simulator ---
-  # Store the proportional split of party shares within each coalition
-  # (set when coalitions are created, used to distribute coalition totals)
-  coal_member_ratios <- reactiveVal(list())
-
-  # When coalition_defs change, compute initial values & ratios
-  observeEvent(
-    coalition_defs(),
-    {
-      coals <- coalition_defs()
-      if (length(coals) == 0) {
-        coal_member_ratios(list())
-        return()
-      }
-      # Compute ratios from sim_defaults (latest estimates)
-      ratios <- lapply(coals, function(members) {
-        shares <- sim_defaults[members]
-        total <- sum(shares, na.rm = TRUE)
-        if (total == 0) {
-          setNames(rep(1 / length(members), length(members)), members)
-        } else {
-          setNames(shares / total, members)
-        }
-      })
-      coal_member_ratios(ratios)
-    },
-    ignoreNULL = FALSE
-  )
-
-  output$sim_description <- renderUI({
-    coals <- coalition_defs()
-    if (length(coals) > 0) {
-      tags$p(
-        style = "color:#999; font-size:0.85em; margin-bottom:16px;",
-        "Adjust vote shares for coalitions and individual parties, then calculate seats.",
-        "Coalition vote shares are distributed across constituencies using weighted",
-        "regional coefficients. Vote shares must sum to 100%."
-      )
-    } else {
-      tags$p(
-        style = "color:#999; font-size:0.85em; margin-bottom:16px;",
-        "Adjust vote shares to see how seat allocation would change.",
-        "Use 'Build coalition' to group parties into electoral coalitions.",
-        "Vote shares must sum to 100% before running the simulation."
-      )
-    }
-  })
-
-  output$sim_inputs_ui <- renderUI({
-    coals <- coalition_defs()
-    coal_members_all <- unlist(coals)
-
-    short_names <- c(
-      "KO" = "KO",
-      "Polska 2050" = "P2050",
-      "Lewica" = "Lewica",
-      "PSL" = "PSL",
-      "PiS" = "PiS",
-      "Konfederacja" = "Konf.",
-      "KKP" = "KKP",
-      "Razem" = "Razem",
-      "MN" = "MN"
-    )
-
-    rows <- list()
-
-    if (length(coals) > 0) {
-      # Coalition rows
-      for (ci in seq_along(coals)) {
-        members <- coals[[ci]]
-        coal_name <- paste(short_names[members], collapse = " + ")
-        col <- coalition_color(members, sim_defaults[members])
-        coal_total <- round(sum(sim_defaults[members], na.rm = TRUE), 1)
-        input_id <- paste0("sim_coal_", ci)
-        rows[[length(rows) + 1]] <- div(
-          class = "sim-input-row",
-          div(
-            class = "sim-input-label",
-            style = "min-width:140px;",
-            HTML(paste0(
-              "<span class='color-dot' style='background:",
-              col,
-              ";'></span>",
-              coal_name,
-              " <span style='font-size:0.7em;color:#999;'>(coalition)</span>"
-            ))
-          ),
-          div(
-            class = "sim-input-box",
-            numericInput(
-              inputId = input_id,
-              label = NULL,
-              value = coal_total,
-              min = 0,
-              max = 100,
-              step = 0.1
-            )
-          ),
-          span(class = "sim-input-pct", "%")
-        )
-      }
-
-      # Solo party rows (not in any coalition)
-      solo_parties <- setdiff(SIM_PARTIES, coal_members_all)
-      for (p in solo_parties) {
-        col <- PARTY_COLORS[p]
-        rows[[length(rows) + 1]] <- div(
-          class = "sim-input-row",
-          div(
-            class = "sim-input-label",
-            style = "min-width:140px;",
-            HTML(paste0(
-              "<span class='color-dot' style='background:",
-              col,
-              ";'></span>",
-              p
-            ))
-          ),
-          div(
-            class = "sim-input-box",
-            numericInput(
-              inputId = paste0("sim_", gsub(" ", "_", p)),
-              label = NULL,
-              value = round(sim_defaults[p], 1),
-              min = 0,
-              max = 100,
-              step = 0.1
-            )
-          ),
-          span(class = "sim-input-pct", "%")
-        )
-      }
-    } else {
-      # No coalitions — show all individual party inputs
-      for (p in SIM_PARTIES) {
-        col <- PARTY_COLORS[p]
-        rows[[length(rows) + 1]] <- div(
-          class = "sim-input-row",
-          div(
-            class = "sim-input-label",
-            HTML(paste0(
-              "<span class='color-dot' style='background:",
-              col,
-              ";'></span>",
-              p
-            ))
-          ),
-          div(
-            class = "sim-input-box",
-            numericInput(
-              inputId = paste0("sim_", gsub(" ", "_", p)),
-              label = NULL,
-              value = round(sim_defaults[p], 1),
-              min = 0,
-              max = 100,
-              step = 0.1
-            )
-          ),
-          span(class = "sim-input-pct", "%")
-        )
-      }
-    }
-
-    tagList(
-      rows,
+          p
+        ))
+      ),
       div(
-        style = "margin-top:8px;",
-        tags$button(
-          class = "coalition-btn",
-          onclick = "openCoalitionModal();",
-          "Build coalition"
+        class = "est-vote-box",
+        numericInput(
+          inputId = paste0("est_", gsub(" ", "_", p)),
+          label = NULL,
+          value = round(vals[p], 1),
+          min = 0,
+          max = 100,
+          step = 0.1
         )
-      )
+      ),
+      span(class = "est-pct", "%"),
+      tagList(seat_tags)
     )
-  })
+  }
 
-  # Read input values — handles both coalition and non-coalition modes
-  # Returns a named vector of per-PARTY vote shares (distributing coalition totals)
-  sim_slider_values <- reactive({
-    coals <- coalition_defs()
-    coal_members_all <- unlist(coals)
-
-    if (length(coals) > 0) {
-      vals <- setNames(rep(0, length(SIM_PARTIES)), SIM_PARTIES)
-      ratios <- coal_member_ratios()
-
-      # Coalition inputs
-      for (ci in seq_along(coals)) {
-        members <- coals[[ci]]
-        coal_val <- input[[paste0("sim_coal_", ci)]]
-        if (is.null(coal_val)) {
-          return(NULL)
-        }
-        # Distribute proportionally
-        r <- ratios[[ci]]
-        for (m in members) {
-          vals[m] <- coal_val * r[m]
-        }
-      }
-
-      # Solo party inputs
-      solo_parties <- setdiff(SIM_PARTIES, coal_members_all)
-      for (p in solo_parties) {
-        v <- input[[paste0("sim_", gsub(" ", "_", p))]]
-        if (is.null(v)) {
-          return(NULL)
-        }
-        vals[p] <- v
-      }
-
-      vals
-    } else {
-      vals <- sapply(SIM_PARTIES, function(p) {
-        input[[paste0("sim_", gsub(" ", "_", p))]]
-      })
-      setNames(vals, SIM_PARTIES)
-    }
-  })
-
-  # Also compute input total for display (reads coalition or party inputs directly)
-  sim_input_total <- reactive({
-    coals <- coalition_defs()
-    coal_members_all <- unlist(coals)
-    total <- 0
-
-    if (length(coals) > 0) {
-      for (ci in seq_along(coals)) {
-        v <- input[[paste0("sim_coal_", ci)]]
-        if (is.null(v)) {
-          return(NULL)
-        }
-        total <- total + v
-      }
-      solo_parties <- setdiff(SIM_PARTIES, coal_members_all)
-      for (p in solo_parties) {
-        v <- input[[paste0("sim_", gsub(" ", "_", p))]]
-        if (is.null(v)) {
-          return(NULL)
-        }
-        total <- total + v
-      }
-    } else {
-      for (p in SIM_PARTIES) {
-        v <- input[[paste0("sim_", gsub(" ", "_", p))]]
-        if (is.null(v)) {
-          return(NULL)
-        }
-        total <- total + v
-      }
-    }
-    total
-  })
-
-  output$sim_total_display <- renderUI({
-    total <- sim_input_total()
-    if (is.null(total)) {
+  output$est_inputs_ui <- renderUI({
+    proj <- est_projection()
+    if (is.null(proj)) {
       return(NULL)
     }
-    css_class <- if (abs(total - 100) < 0.15) {
-      "sim-total sim-total-ok"
+    coals <- coalition_defs()
+    cols <- proj$colors
+    entities <- proj$entities
+
+    if (length(coals) == 0) {
+      # --- No coalitions: two columns sorted by vote share descending ---
+      vals <- est_input_values()
+      national <- proj$national
+      seat_of <- function(p) {
+        v <- national$seats[national$party == p]
+        if (length(v) == 0) 0L else v
+      }
+      ordered <- EST_PARTIES[order(-vals[EST_PARTIES])]
+      rows <- lapply(ordered, function(p) {
+        est_party_row(p, cols[p], seat_of(p))
+      })
+      # Three columns, filled column-major so reading down col 1, then col 2,
+      # then col 3 follows descending vote order (top-left -> bottom-right).
+      n <- length(rows)
+      per_col <- ceiling(n / 3)
+      cols_list <- lapply(0:2, function(k) {
+        idx <- (k * per_col + 1):min((k + 1) * per_col, n)
+        idx <- idx[idx >= 1 & idx <= n]
+        if (length(idx) == 0) {
+          return(NULL)
+        }
+        div(class = "est-col", tagList(rows[idx]))
+      })
+      div(class = "est-columns", tagList(Filter(Negate(is.null), cols_list)))
     } else {
-      "sim-total sim-total-bad"
+      # --- Coalitions: one column per coalition + a shared solo column ---
+      coal_entities <- Filter(function(e) e$is_coalition, entities)
+      solo_entities <- Filter(function(e) !e$is_coalition, entities)
+
+      coal_cols <- lapply(coal_entities, function(e) {
+        # Members show vote share only; individual seats within a joint list
+        # are unknowable, so only the coalition total (below) is given.
+        member_rows <- lapply(e$members, function(p) {
+          est_party_row(p, PARTY_COLORS[p], NULL, show_seats = FALSE)
+        })
+        div(
+          class = "est-col est-coal-col",
+          div(
+            class = "est-coal-header",
+            HTML(paste0(
+              "<span class='color-dot' style='background:",
+              e$color,
+              ";'></span>",
+              e$name
+            ))
+          ),
+          tagList(member_rows),
+          div(
+            class = "est-coal-total",
+            span(class = "est-coal-total-label", "Coalition"),
+            span(
+              class = "est-coal-total-vote",
+              paste0(format(round(e$vote, 1), nsmall = 1), "%")
+            ),
+            span(class = "est-coal-total-seats", e$seats),
+            span(class = "est-seats-label", "seats")
+          )
+        )
+      })
+
+      solo_col <- if (length(solo_entities) > 0) {
+        # Sort solo parties by vote descending
+        ord <- order(-sapply(solo_entities, function(e) e$vote))
+        solo_rows <- lapply(solo_entities[ord], function(e) {
+          est_party_row(e$name, e$color, e$seats)
+        })
+        list(div(
+          class = "est-col est-solo-col",
+          div(class = "est-coal-header est-solo-header", "Other parties"),
+          tagList(solo_rows)
+        ))
+      } else {
+        list()
+      }
+
+      div(class = "est-columns", tagList(c(coal_cols, solo_col)))
     }
+  })
+
+  output$est_total_display <- renderUI({
+    vals <- est_input_values()
+    total <- sum(vals[EST_PARTIES])
+    other <- vals["Other"]
+    # The named party/coalition shares must be within 1 percentage point of 100;
+    # only flag (red) when that criterion is not met.
+    ok <- abs(total - 100) <= 1
+    css_class <- if (ok) "sim-total" else "sim-total sim-total-bad"
     div(
-      class = css_class,
-      paste0("Total: ", format(round(total, 1), nsmall = 1), "%")
+      style = "margin-top:10px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;",
+      div(
+        class = css_class,
+        paste0(
+          "Parties: ",
+          format(round(total, 1), nsmall = 1),
+          "%  ·  Remainder: ",
+          format(round(other, 1), nsmall = 1),
+          "%"
+        )
+      ),
+      if (!ok) {
+        tags$span(
+          style = "color:#c0392b; font-size:0.85em;",
+          "The remainder must be no more than ± 1 pp – adjust the vote shares before continuing."
+        )
+      }
     )
   })
 
-  sim_seat_data <- reactiveVal(sim_initial_seats)
-  sim_has_run <- reactiveVal(FALSE)
-  sim_selected_const <- reactiveVal(NULL)
-
-  observeEvent(input$sim_run, {
-    vals <- sim_slider_values()
-    if (is.null(vals) || any(sapply(vals, is.null))) {
-      return()
+  # --- Coalition analysis shown below the party columns ---
+  # A "majority class" badge: veto override (>=276) or constitutional (>=307).
+  majority_badge <- function(seats) {
+    if (seats >= 307) {
+      " <span class='coalition-majority' style='color:green;'>(constitutional majority – can amend the constitution)</span>"
+    } else if (seats >= 276) {
+      " <span class='coalition-majority' style='color:green;'>(can override a presidential veto)</span>"
+    } else {
+      ""
     }
-    total <- sum(unlist(vals))
-    if (abs(total - 100) >= 0.15) {
-      return()
-    }
+  }
 
-    vote_shares <- setNames(as.numeric(vals), SIM_PARTIES)
+  coalition_line <- function(label, co) {
+    paste0(
+      "<div class='coalition-entry'>",
+      "<div class='coalition-name'>",
+      label,
+      ": <b>",
+      co$name,
+      "</b></div>",
+      "<div><span class='coalition-seats'>",
+      co$seats,
+      " seats</span>",
+      majority_badge(co$seats),
+      "</div></div>"
+    )
+  }
+
+  output$est_analysis <- renderUI({
+    gov <- est_gov_coalitions()
     coals <- coalition_defs()
-    result <- allocate_seats_with_coalitions(vote_shares, coals)
-    sim_seat_data(result)
-    sim_has_run(TRUE)
-    sim_selected_const(NULL)
+    header <- "Coalition possibilities"
+
+    if (length(gov) == 0) {
+      return(div(
+        class = "est-analysis",
+        tags$h6(
+          style = "margin:14px 0 6px 0; font-size:1.3rem; font-weight:bold;",
+          header
+        ),
+        div(
+          style = "color:#999; font-size:0.9em;",
+          "No combination of parties reaches a governing majority (231 seats)."
+        )
+      ))
+    }
+
+    seats_of <- sapply(gov, function(x) x$seats)
+
+    if (length(coals) == 0) {
+      # (a) minimum winning coalition; (b) the smallest coalition that reaches
+      # a constitutional majority (>= 307 seats), if one is possible.
+      mwc <- minimal_winning_coalition(gov)
+
+      lines <- list(coalition_line("Minimum winning coalition", mwc))
+
+      const_majorities <- Filter(function(co) co$seats >= 307, gov)
+      if (length(const_majorities) > 0) {
+        cm_seats <- sapply(const_majorities, function(co) co$seats)
+        smallest_const <- const_majorities[[which.min(cm_seats)[1]]]
+        if (!identical(sort(smallest_const$parties), sort(mwc$parties))) {
+          lines[[length(lines) + 1]] <- coalition_line(
+            "Minimum constitutional majority",
+            smallest_const
+          )
+        }
+      }
+      body <- tagList(lapply(lines, HTML))
+    } else {
+      # List the possible governing coalitions among the user-defined blocs
+      gov_sorted <- gov[order(-seats_of)]
+      lines <- lapply(gov_sorted, function(co) coalition_line("Majority", co))
+      body <- tagList(HTML(paste(lines, collapse = "")))
+    }
+
+    div(
+      class = "est-analysis",
+      tags$h6(
+        style = "margin:14px 0 6px 0; font-size:1.3rem; font-weight:bold;",
+        header
+      ),
+      body
+    )
   })
 
-  sim_map_data <- reactive({
-    result <- sim_seat_data()
+  # Weighting note (shown below when coalitions are defined)
+  # --- Seat projection: hemicycle ---
+
+  # Build the ordered seat-block layout for a hemicycle from a projection and
+  # its winning coalition. Returns a list with $layout (one row per seat) and
+  # $blocks. Winning bloc on the left, largest opposition on the right, others
+  # in between (by seats, largest nearest the winner). All full colour.
+  compute_hemicycle_data <- function(proj, winner) {
+    if (is.null(proj)) {
+      return(NULL)
+    }
+    entities <- proj$entities
+    won <- Filter(function(e) !is.na(e$seats) && e$seats > 0, entities)
+    if (length(won) == 0) {
+      return(NULL)
+    }
+
+    winner_parties <- if (length(winner$winners) > 0) {
+      winner$winners[[1]]$parties
+    } else {
+      character(0)
+    }
+
+    is_winner_entity <- function(e) {
+      e$name %in% winner_parties || any(e$members %in% winner_parties)
+    }
+    winner_entities <- Filter(is_winner_entity, won)
+    rest <- Filter(function(e) !is_winner_entity(e), won)
+
+    ordered <- winner_entities
+    if (length(rest) > 0) {
+      rest <- rest[order(-sapply(rest, function(e) e$seats))]
+      far_right <- rest[[1]]
+      middle <- if (length(rest) > 1) rest[-1] else list()
+      ordered <- c(winner_entities, middle, list(far_right))
+    }
+
+    order_entities_by_ideology <- function(ents) {
+      if (length(ents) <= 1) {
+        return(ents)
+      }
+      key <- sapply(ents, function(e) {
+        pos <- match(e$members, HEMICYCLE_ORDER)
+        min(pos, na.rm = TRUE)
+      })
+      ents[order(key)]
+    }
+    if (length(winner_entities) > 1) {
+      ordered <- c(
+        order_entities_by_ideology(winner_entities),
+        ordered[(length(winner_entities) + 1):length(ordered)]
+      )
+    }
+
+    seat_rows <- list()
+    for (e in ordered) {
+      members_ord <- intersect(HEMICYCLE_ORDER, e$members)
+      for (p in members_ord) {
+        n <- e$member_seats[p]
+        if (is.na(n) || n <= 0) {
+          next
+        }
+        seat_rows[[length(seat_rows) + 1]] <- data.frame(
+          party = p,
+          entity = e$name,
+          n = n,
+          color = unname(e$color),
+          stringsAsFactors = FALSE
+        )
+      }
+    }
+
+    if (length(seat_rows) == 0) {
+      return(NULL)
+    }
+    blocks <- bind_rows(seat_rows)
+    blocks$color[is.na(blocks$color)] <- "gray50"
+    total_seats <- sum(blocks$n)
+
+    layout <- hemicycle_layout(total_seats)
+    layout$party <- rep(blocks$party, blocks$n)
+    layout$entity <- rep(blocks$entity, blocks$n)
+    layout$fill <- rep(blocks$color, blocks$n)
+
+    list(layout = layout, blocks = blocks)
+  }
+
+  # Build the winning-coalition label UI from a winner object.
+  build_hemicycle_label <- function(w) {
+    if (length(w$winners) == 0) {
+      return(div(
+        class = "hemicycle-label hemicycle-label-none",
+        "No governing majority"
+      ))
+    }
+    seat_badge <- function(co) {
+      extra <- if (co$seats >= 307) {
+        " · constitutional majority"
+      } else if (co$seats >= 276) {
+        " · veto override"
+      } else {
+        ""
+      }
+      paste0(
+        "<span class='hemicycle-win-name'>",
+        co$name,
+        "</span> <span class='hemicycle-win-seats'>",
+        co$seats,
+        " seats</span><span class='hemicycle-win-extra'>",
+        extra,
+        "</span>"
+      )
+    }
+    if (w$tie) {
+      blocks <- paste(
+        sapply(w$winners, function(co) {
+          paste0("<div class='hemicycle-win-line'>", seat_badge(co), "</div>")
+        }),
+        collapse = ""
+      )
+      div(
+        class = "hemicycle-label",
+        HTML(paste0(
+          "<div class='hemicycle-label-title'>Tie – two possible winning coalitions</div>",
+          blocks
+        ))
+      )
+    } else {
+      co <- w$winners[[1]]
+      div(
+        class = "hemicycle-label",
+        HTML(paste0(
+          "<div class='hemicycle-label-title'>Winning coalition</div>",
+          "<div class='hemicycle-win-line'>",
+          seat_badge(co),
+          "</div>"
+        ))
+      )
+    }
+  }
+
+  # Build the constituency-map sf data frame from a seat-data result + colours.
+  compute_map_data <- function(result, colors) {
     if (is.null(result) || !("okreg" %in% names(result))) {
       return(NULL)
     }
-
     totals <- result %>%
       group_by(okreg) %>%
       summarise(total_seats = sum(seats), .groups = "drop")
-
     winners <- result %>%
       group_by(okreg) %>%
       slice_max(seats, n = 1, with_ties = FALSE) %>%
@@ -1923,43 +2533,13 @@ server <- function(input, output, session) {
         dominance = ifelse(total_seats > 0, winning_seats / total_seats, 0),
         winning_party = ifelse(winning_seats == 0, NA_character_, winning_party)
       )
-
     md <- merge(const_map, winners, by.x = "id", by.y = "okreg", all.x = TRUE)
-
-    # Build color lookup including coalition colors
-    coals <- coalition_defs()
-    sim_colors <- PARTY_COLORS
-    if (length(coals) > 0) {
-      vals <- sim_slider_values()
-      if (!is.null(vals)) {
-        short_names <- c(
-          "KO" = "KO",
-          "Polska 2050" = "P2050",
-          "Lewica" = "Lewica",
-          "PSL" = "PSL",
-          "PiS" = "PiS",
-          "Konfederacja" = "Konf.",
-          "KKP" = "KKP",
-          "Razem" = "Razem",
-          "MN" = "MN"
-        )
-        for (coal in coals) {
-          coal_name <- paste(short_names[coal], collapse = " + ")
-          vote_pcts <- setNames(
-            as.numeric(vals[coal]),
-            coal
-          )
-          sim_colors[coal_name] <- coalition_color(coal, vote_pcts)
-        }
-      }
-    }
-
     md$fill_color <- mapply(
       function(party, dom) {
         if (is.na(party)) {
           return("grey80")
         }
-        col <- sim_colors[party]
+        col <- colors[party]
         if (is.na(col)) {
           col <- "gray50"
         }
@@ -1970,483 +2550,270 @@ server <- function(input, output, session) {
       md$winning_party,
       md$dominance
     )
-
     md
-  })
+  }
 
-  sim_national <- reactive({
-    result <- sim_seat_data()
-    if (is.null(result)) {
-      return(NULL)
-    }
-    national <- result %>%
-      group_by(party) %>%
-      summarise(seats = sum(seats), .groups = "drop")
-    if (sim_has_run()) {
-      national <- national %>% filter(seats > 0)
-    }
-    national %>% arrange(desc(seats))
-  })
+  # Register all outputs/observers for one seat-projection section, keyed by a
+  # prefix ("naive" / "realistic"). Input/output IDs are <prefix>_<name>.
+  register_projection_section <- function(
+    prefix,
+    proj_r,
+    colors_r,
+    winner_r,
+    seatdata_r
+  ) {
+    id <- function(name) paste0(prefix, "_", name)
+    hemi_selected <- reactiveVal(NULL)
+    map_selected <- reactiveVal(NULL)
 
-  output$sim_results_ui <- renderUI({
-    national <- sim_national()
-    if (is.null(national)) {
-      return(NULL)
-    }
+    hemi_data <- reactive(compute_hemicycle_data(proj_r(), winner_r()))
+    map_data <- reactive(compute_map_data(seatdata_r(), colors_r()))
 
-    coals <- coalition_defs()
-    sim_colors <- PARTY_COLORS
-    if (length(coals) > 0) {
-      vals <- sim_slider_values()
-      if (!is.null(vals)) {
-        short_names <- c(
-          "KO" = "KO",
-          "Polska 2050" = "P2050",
-          "Lewica" = "Lewica",
-          "PSL" = "PSL",
-          "PiS" = "PiS",
-          "Konfederacja" = "Konf.",
-          "KKP" = "KKP",
-          "Razem" = "Razem",
-          "MN" = "MN"
-        )
-        for (coal in coals) {
-          coal_name <- paste(short_names[coal], collapse = " + ")
-          vote_pcts <- setNames(as.numeric(vals[coal]), coal)
-          sim_colors[coal_name] <- coalition_color(coal, vote_pcts)
+    output[[id("hemicycle_plot")]] <- renderPlot(
+      {
+        showtext_opts(dpi = 96)
+        hd <- hemi_data()
+        if (is.null(hd)) {
+          return(NULL)
         }
-      }
-    }
+        ggplot(hd$layout, aes(x = x, y = y)) +
+          geom_point(
+            aes(fill = fill),
+            shape = 21,
+            color = "white",
+            size = 4,
+            stroke = 0.3
+          ) +
+          scale_fill_identity() +
+          coord_fixed(xlim = c(-2.1, 2.1), ylim = c(0, 2.15)) +
+          theme_void(base_family = PLOT_FONT) +
+          theme(
+            legend.position = "none",
+            plot.margin = unit(c(0, 0, 0, 0), "cm")
+          )
+      },
+      res = 96,
+      execOnResize = TRUE
+    )
 
-    seat_entries <- lapply(seq_len(nrow(national)), function(i) {
-      p <- national$party[i]
-      col <- sim_colors[p]
-      if (is.na(col)) {
-        col <- "gray50"
-      }
-      HTML(paste0(
-        "<div class='sim-seat-entry'>",
-        "<span class='sim-seat-party'><span class='color-dot' style='background:",
-        col,
-        ";'></span>",
-        p,
-        "</span>",
-        "<span class='sim-seat-count'>",
-        national$seats[i],
-        "</span>",
-        "</div>"
-      ))
+    output[[id(
+      "hemicycle_label"
+    )]] <- renderUI(build_hemicycle_label(winner_r()))
+
+    observeEvent(list(coalition_defs(), selected_date()), {
+      hemi_selected(NULL)
     })
 
-    div(
-      tags$h5("Seats"),
-      div(
-        style = "margin-bottom:8px;",
-        actionButton("sim_run", "Calculate seats")
-      ),
-      tagList(seat_entries)
-    )
-  })
-
-  output$sim_coalitions_ui <- renderUI({
-    national <- sim_national()
-    if (is.null(national)) {
-      return(NULL)
-    }
-
-    coalition_content <- NULL
-    if (sim_has_run()) {
-      # build_coalitions works with the party names in national (which may include
-      # coalition names like "KO + P2050"). We need to adapt it.
-      coals <- coalition_defs()
-      if (length(coals) > 0) {
-        # Use entity names from national directly
-        get_s <- function(p) {
-          val <- national$seats[national$party == p]
-          if (length(val) == 0) 0L else val
-        }
-
-        # Map each entity name (using short names matching national$party) to its member parties
-        short_names <- c(
-          "KO" = "KO",
-          "Polska 2050" = "P2050",
-          "Lewica" = "Lewica",
-          "PSL" = "PSL",
-          "PiS" = "PiS",
-          "Konfederacja" = "Konf.",
-          "KKP" = "KKP",
-          "Razem" = "Razem",
-          "MN" = "MN"
-        )
-        entity_members <- list()
-        for (coal in coals) {
-          coal_name <- paste(short_names[coal], collapse = " + ")
-          entity_members[[coal_name]] <- coal
-        }
-
-        # Forbidden pairs (same as build_coalitions)
-        forbidden <- list(
-          c("Konfederacja", "Lewica"),
-          c("Konfederacja", "Razem"),
-          c("KKP", "Lewica"),
-          c("KKP", "Razem"),
-          c("KKP", "KO"),
-          c("PiS", "KO"),
-          c("PiS", "Lewica")
-        )
-
-        # Check if a combination of entities is compatible
-        # Parties within the same entity (electoral coalition) are exempt
-        is_combo_compatible <- function(entity_combo) {
-          # Collect all member parties across different entities
-          all_cross_parties <- list()
-          for (ent in entity_combo) {
-            members <- entity_members[[ent]]
-            if (is.null(members)) {
-              members <- ent
-            } # solo party
-            all_cross_parties[[ent]] <- members
-          }
-          # Check forbidden pairs across different entities
-          for (fp in forbidden) {
-            # Find which entities contain each forbidden party
-            ent_for_p1 <- NULL
-            ent_for_p2 <- NULL
-            for (ent in names(all_cross_parties)) {
-              if (fp[1] %in% all_cross_parties[[ent]]) {
-                ent_for_p1 <- c(ent_for_p1, ent)
-              }
-              if (fp[2] %in% all_cross_parties[[ent]]) {
-                ent_for_p2 <- c(ent_for_p2, ent)
-              }
-            }
-            if (!is.null(ent_for_p1) && !is.null(ent_for_p2)) {
-              # Forbidden if the two parties are in DIFFERENT entities
-              if (!any(ent_for_p1 %in% ent_for_p2)) return(FALSE)
-            }
-          }
-          TRUE
-        }
-
-        # Build governing majorities from the entities in national
-        entity_names <- national$party[national$seats > 0]
-        gov_combos <- list()
-
-        for (size in 1:length(entity_names)) {
-          combos <- combn(entity_names, size, simplify = FALSE)
-          for (combo in combos) {
-            if (!is_combo_compatible(combo)) {
-              next
-            }
-            total <- sum(sapply(combo, get_s))
-            if (total >= 231) {
-              gov_combos[[length(gov_combos) + 1]] <- list(
-                name = paste(combo, collapse = " + "),
-                seats = total,
-                parties = combo
-              )
-            }
-          }
-        }
-        # Remove supersets of single-entity majorities
-        single_maj <- entity_names[sapply(entity_names, function(p) {
-          get_s(p) >= 231
-        })]
-        gov_combos <- Filter(
-          function(x) {
-            if (length(x$parties) == 1) {
-              return(TRUE)
-            }
-            !any(single_maj %in% x$parties)
-          },
-          gov_combos
-        )
-
-        gov_combos <- gov_combos[order(
-          -sapply(gov_combos, function(x) x$seats)
-        )]
-        coalition_content <- lapply(gov_combos, function(co) {
-          label <- if (co$seats >= 307) {
-            "<span class='coalition-majority' style='color:green;'>constitutional majority</span>"
-          } else if (co$seats >= 276) {
-            "<span class='coalition-majority' style='color:green;'>veto override</span>"
-          } else {
-            ""
-          }
-          HTML(paste0(
-            "<div class='coalition-entry'>",
-            "<div class='coalition-name'>",
-            co$name,
-            "</div>",
-            "<div><span class='coalition-seats'>",
-            co$seats,
-            " seats</span>",
-            label,
-            "</div></div>"
-          ))
-        })
-      } else {
-        get_s <- function(p) {
-          val <- national$seats[national$party == p]
-          if (length(val) == 0) 0L else val
-        }
-        coalitions <- build_coalitions(get_s)
-
-        coalition_content <- lapply(coalitions, function(co) {
-          label <- if (co$seats >= 307) {
-            "<span class='coalition-majority' style='color:green;'>constitutional majority</span>"
-          } else if (co$seats >= 276) {
-            "<span class='coalition-majority' style='color:green;'>veto override</span>"
-          } else {
-            ""
-          }
-          HTML(paste0(
-            "<div class='coalition-entry'>",
-            "<div class='coalition-name'>",
-            co$name,
-            "</div>",
-            "<div><span class='coalition-seats'>",
-            co$seats,
-            " seats</span>",
-            label,
-            "</div></div>"
-          ))
-        })
+    observeEvent(input[[id("hemicycle_click")]], {
+      hd <- hemi_data()
+      if (is.null(hd)) {
+        return()
       }
-    }
+      layout <- hd$layout
+      click <- input[[id("hemicycle_click")]]
+      d2 <- (layout$x - click$x)^2 + (layout$y - click$y)^2
+      if (min(d2) > 0.05) {
+        hemi_selected(NULL)
+        return()
+      }
+      hemi_selected(layout$entity[which.min(d2)])
+    })
 
-    div(
-      class = "popup-coalitions",
-      tags$h5("Governing majorities"),
-      tagList(coalition_content)
-    )
-  })
-
-  output$sim_map_ui <- renderUI({
-    sim_seat_data() # trigger reactivity
-    div(
-      class = "popup-map",
-      tags$h5("Constituency seat shares"),
-      div(
-        style = "position: relative;",
-        plotOutput(
-          "sim_map",
-          click = "sim_map_click",
-          width = "250px",
-          height = "280px"
-        ),
-        uiOutput("sim_map_popup")
-      ),
-      tags$p(
-        style = "margin:4px 0 0 0; color:#999; font-size:0.75em; max-width:250px;",
-        "Click on the map for constituency seat shares."
-      )
-    )
-  })
-
-  output$sim_map <- renderPlot(
-    {
-      showtext_opts(dpi = 96)
-      md <- sim_map_data()
-      if (is.null(md)) {
+    output[[id("hemicycle_popup")]] <- renderUI({
+      ent_name <- hemi_selected()
+      if (is.null(ent_name)) {
         return(NULL)
       }
-
-      fill_vals <- setNames(md$fill_color, md$id)
-      ggplot(md) +
-        geom_sf(
-          aes(fill = as.character(id)),
-          color = "white",
-          linewidth = 0.2
-        ) +
-        scale_fill_manual(values = fill_vals, na.value = "grey80") +
-        theme_void(base_family = "Jost") +
-        theme(
-          legend.position = "none",
-          plot.margin = unit(c(0, 0, 0, 0), "cm")
-        )
-    },
-    res = 96
-  )
-
-  observeEvent(input$sim_map_click, {
-    md <- sim_map_data()
-    if (is.null(md)) {
-      return()
-    }
-
-    click_point <- sf::st_point(c(input$sim_map_click$x, input$sim_map_click$y))
-    click_sfc <- sf::st_sfc(click_point, crs = sf::st_crs(md))
-    hit <- sf::st_intersects(click_sfc, md)
-
-    if (length(hit[[1]]) > 0) {
-      sim_selected_const(md$id[hit[[1]][1]])
-    } else {
-      sim_selected_const(NULL)
-    }
-  })
-
-  output$sim_map_popup <- renderUI({
-    const_id <- sim_selected_const()
-    if (is.null(const_id)) {
-      return(NULL)
-    }
-
-    result <- sim_seat_data()
-    if (is.null(result)) {
-      return(NULL)
-    }
-
-    cs <- result %>%
-      filter(okreg == const_id, seats > 0) %>%
-      arrange(desc(seats))
-
-    if (nrow(cs) == 0) {
-      return(NULL)
-    }
-
-    const_name <- const_map$cst_n[const_map$id == const_id]
-    if (length(const_name) == 0) {
-      const_name <- paste("Constituency", const_id)
-    }
-
-    # Build color lookup including coalition colors
-    coals <- coalition_defs()
-    sim_colors <- PARTY_COLORS
-    if (length(coals) > 0) {
-      vals <- sim_slider_values()
-      if (!is.null(vals)) {
-        short_names <- c(
-          "KO" = "KO",
-          "Polska 2050" = "P2050",
-          "Lewica" = "Lewica",
-          "PSL" = "PSL",
-          "PiS" = "PiS",
-          "Konfederacja" = "Konf.",
-          "KKP" = "KKP",
-          "Razem" = "Razem",
-          "MN" = "MN"
-        )
-        for (coal in coals) {
-          coal_name <- paste(short_names[coal], collapse = " + ")
-          vote_pcts <- setNames(as.numeric(vals[coal]), coal)
-          sim_colors[coal_name] <- coalition_color(coal, vote_pcts)
-        }
+      proj <- proj_r()
+      if (is.null(proj)) {
+        return(NULL)
       }
-    }
-
-    entries <- cs %>%
-      rowwise() %>%
-      mutate(
-        color_hex = {
-          col <- sim_colors[party]
-          if (is.na(col)) "gray50" else col
-        },
-        html = paste0(
+      e <- Filter(function(x) x$name == ent_name, proj$entities)
+      if (length(e) == 0) {
+        return(NULL)
+      }
+      e <- e[[1]]
+      if (e$is_coalition) {
+        member_html <- sapply(e$members, function(p) {
+          paste0(
+            "<div class='map-popup-entry'>",
+            "<span class='map-popup-party'><span class='color-dot' style='background:",
+            PARTY_COLORS[p],
+            ";'></span>",
+            p,
+            "</span>",
+            "<span class='map-popup-seats'>",
+            e$member_seats[p],
+            "</span>&nbsp;seats</div>"
+          )
+        })
+        body <- paste0(
+          "<div style='font-size:0.8em; color:#888; margin-bottom:4px;'>Electoral coalition</div>",
+          paste(member_html, collapse = ""),
+          "<div class='map-popup-entry' style='border-top:1px solid #ddd; margin-top:4px; padding-top:4px; font-weight:bold;'>",
+          "<span class='map-popup-party'>Total</span>",
+          "<span class='map-popup-seats'>",
+          e$seats,
+          "</span>&nbsp;seats</div>"
+        )
+      } else {
+        body <- paste0(
           "<div class='map-popup-entry'>",
           "<span class='map-popup-party'><span class='color-dot' style='background:",
-          color_hex,
+          e$color,
           ";'></span>",
-          party,
+          e$name,
           "</span>",
           "<span class='map-popup-seats'>",
-          seats,
-          "</span>",
-          "&nbsp;seats</div>"
+          e$seats,
+          "</span>&nbsp;seats</div>"
         )
-      ) %>%
-      pull(html)
-
-    left_px <- input$sim_map_click$coords_css$x
-    top_px <- input$sim_map_click$coords_css$y
-
-    div(
-      class = "map-popup",
-      style = paste0("left:", left_px + 15, "px; top:", top_px + 15, "px;"),
-      HTML(paste0(
-        "<b>",
-        const_name,
-        "</b><br>",
-        paste(entries, collapse = "")
-      ))
-    )
-  })
-
-  # Weighting explanation shown below the simulator when coalitions are defined
-  output$sim_weighting_note <- renderUI({
-    coals <- coalition_defs()
-    if (length(coals) == 0) {
-      return(NULL)
-    }
-
-    short_names <- c(
-      "KO" = "KO",
-      "Polska 2050" = "P2050",
-      "Lewica" = "Lewica",
-      "PSL" = "PSL",
-      "PiS" = "PiS",
-      "Konfederacja" = "Konf.",
-      "KKP" = "KKP",
-      "Razem" = "Razem",
-      "MN" = "MN"
-    )
-
-    coef_labels <- c(
-      "PiS" = "PiS coefficient",
-      "KO" = "KO coefficient",
-      "Lewica" = "Lewica coefficient",
-      "Razem" = "Lewica coefficient",
-      "Konfederacja" = "Konfederacja coefficient",
-      "KKP" = "Konfederacja coefficient",
-      "Polska 2050" = "TD coefficient",
-      "PSL" = "TD coefficient"
-    )
-
-    ratios <- coal_member_ratios()
-    explanations <- lapply(seq_along(coals), function(ci) {
-      members <- coals[[ci]]
-      coal_name <- paste(short_names[members], collapse = " + ")
-      r <- ratios[[ci]]
-      member_desc <- paste(
-        sapply(members, function(m) {
-          pct <- round(r[m] * 100, 0)
-          paste0(
-            short_names[m],
-            " (",
-            pct,
-            "% weight, using ",
-            coef_labels[m],
-            ")"
-          )
-        }),
-        collapse = ", "
+      }
+      click <- input[[id("hemicycle_click")]]
+      div(
+        class = "map-popup",
+        style = paste0(
+          "left:",
+          click$coords_css$x + 15,
+          "px; top:",
+          click$coords_css$y + 15,
+          "px;"
+        ),
+        HTML(paste0("<b>", ent_name, "</b><br>", body))
       )
-
-      HTML(paste0(
-        "<p style='margin:4px 0;'><b>",
-        coal_name,
-        ":</b> ",
-        "Constituency vote shares are calculated using a weighted average of ",
-        "regional coefficients based on each member party's share of the coalition total. ",
-        "Members: ",
-        member_desc,
-        ".",
-        " An 8% national threshold applies to this coalition.</p>"
-      ))
     })
 
-    div(
-      style = "margin-top:16px; padding:12px 16px; background:#f8f9fa; border-radius:6px; font-size:0.85em; color:#555; max-width:810px;",
-      tags$h6(style = "margin:0 0 8px 0; color:#333;", "Coalition weighting"),
-      tagList(explanations),
-      tags$p(
-        style = "margin:8px 0 0 0; color:#888; font-size:0.9em;",
-        "Each party has a regional coefficient derived from the 2023 election results that adjusts ",
-        "its vote share up or down in each constituency. For coalitions, these coefficients are ",
-        "combined using a weighted average based on each member's share of the coalition's total vote."
+    output[[id("map_ui")]] <- renderUI({
+      div(
+        class = "popup-map",
+        style = "border-left:none; padding-left:0;",
+        tags$h5("Constituency seat shares"),
+        div(
+          style = "position: relative;",
+          plotOutput(
+            id("map"),
+            click = id("map_click"),
+            width = "250px",
+            height = "280px"
+          ),
+          uiOutput(id("map_popup"))
+        ),
+        tags$p(
+          style = "margin:4px 0 0 0; color:#999; font-size:0.75em; max-width:250px;",
+          "Click on the map for constituency seat shares."
+        )
       )
+    })
+
+    output[[id("map")]] <- renderPlot(
+      {
+        showtext_opts(dpi = 96)
+        md <- map_data()
+        if (is.null(md)) {
+          return(NULL)
+        }
+        fill_vals <- setNames(md$fill_color, md$id)
+        ggplot(md) +
+          geom_sf(
+            aes(fill = as.character(id)),
+            color = "white",
+            linewidth = 0.2
+          ) +
+          scale_fill_manual(values = fill_vals, na.value = "grey80") +
+          theme_void(base_family = PLOT_FONT) +
+          theme(
+            legend.position = "none",
+            plot.margin = unit(c(0, 0, 0, 0), "cm")
+          )
+      },
+      res = 96
     )
-  })
+
+    observeEvent(input[[id("map_click")]], {
+      md <- map_data()
+      if (is.null(md)) {
+        return()
+      }
+      click <- input[[id("map_click")]]
+      click_point <- sf::st_point(c(click$x, click$y))
+      click_sfc <- sf::st_sfc(click_point, crs = sf::st_crs(md))
+      hit <- sf::st_intersects(click_sfc, md)
+      if (length(hit[[1]]) > 0) {
+        map_selected(md$id[hit[[1]][1]])
+      } else {
+        map_selected(NULL)
+      }
+    })
+
+    output[[id("map_popup")]] <- renderUI({
+      const_id <- map_selected()
+      if (is.null(const_id)) {
+        return(NULL)
+      }
+      result <- seatdata_r()
+      if (is.null(result)) {
+        return(NULL)
+      }
+      cs <- result %>%
+        filter(okreg == const_id, seats > 0) %>%
+        arrange(desc(seats))
+      if (nrow(cs) == 0) {
+        return(NULL)
+      }
+      const_name <- const_map$cst_n[const_map$id == const_id]
+      if (length(const_name) == 0) {
+        const_name <- paste("Constituency", const_id)
+      }
+      colors <- colors_r()
+      entries <- cs %>%
+        rowwise() %>%
+        mutate(
+          color_hex = {
+            col <- colors[party]
+            if (is.na(col)) "gray50" else col
+          },
+          html = paste0(
+            "<div class='map-popup-entry'>",
+            "<span class='map-popup-party'><span class='color-dot' style='background:",
+            color_hex,
+            ";'></span>",
+            party,
+            "</span>",
+            "<span class='map-popup-seats'>",
+            seats,
+            "</span>",
+            "&nbsp;seats</div>"
+          )
+        ) %>%
+        pull(html)
+      click <- input[[id("map_click")]]
+      div(
+        class = "map-popup",
+        style = paste0(
+          "left:",
+          click$coords_css$x + 15,
+          "px; top:",
+          click$coords_css$y + 15,
+          "px;"
+        ),
+        HTML(paste0(
+          "<b>",
+          const_name,
+          "</b><br>",
+          paste(entries, collapse = "")
+        ))
+      )
+    })
+  }
+
+  # Wire up the single (slider-driven) projection section
+  register_projection_section(
+    "proj",
+    est_projection,
+    est_colors,
+    est_winner,
+    est_seat_data
+  )
 }
 
 shinyApp(ui, server)
