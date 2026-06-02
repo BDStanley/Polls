@@ -1589,11 +1589,14 @@ server <- function(input, output, session) {
     setNames(as.numeric(vals[SIM_PARTIES]), SIM_PARTIES)
   })
 
-  # Coalitional-dynamics strength from the slider (0 = no punishment, 1 = max)
+  # Coalitional-dynamics strength from the slider (0 = no punishment, 1 = max).
+  # Debounced so dragging the slider doesn't trigger a recalculation on every
+  # intermediate value; the projection updates once the slider settles. The
+  # visual % label still tracks live via the oninput JS handler above.
   punish_strength <- reactive({
     s <- input$coalition_dynamics
     if (is.null(s)) 0 else s / 100
-  })
+  }) %>% debounce(300)
 
   # Effective vote shares after the coalitional-dynamics punishment. At
   # strength 0 these equal the raw entered shares (so the projection is naive).
@@ -1755,8 +1758,13 @@ server <- function(input, output, session) {
     )
   })
 
-  observeEvent(input$plot_click, {
-    clicked_date <- as.Date(input$plot_click$x, origin = "1970-01-01")
+  # Debounced so a rapid double-click (or a click the browser reports twice)
+  # coalesces into a single date selection + reseed, rather than firing the
+  # recalculation more than once.
+  plot_click_d <- reactive(input$plot_click) %>% debounce(300)
+
+  observeEvent(plot_click_d(), {
+    clicked_date <- as.Date(plot_click_d()$x, origin = "1970-01-01")
     idx <- which.min(abs(available_dates - clicked_date))
     new_date <- available_dates[idx]
     selected_date(new_date)
