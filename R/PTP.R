@@ -52,6 +52,9 @@ PARTY_COLORS <- c(
   "Other" = "gray50"
 )
 TINY_CONSTANT <- 0.0005
+# Recency weighting: a poll HALF_LIFE_DAYS old counts half as much as one today.
+# Smaller = more responsive to recent polls; larger = smoother/more inertia.
+HALF_LIFE_DAYS <- 30
 
 # Theme functions
 theme_plots <- function(base_size = 11, base_family = "Jost") {
@@ -333,6 +336,15 @@ polls <- polls %>%
     time = interval(min(midDate), midDate) / years(1)
   )
 
+# Recency weights: exponential decay by poll age, renormalised to mean 1 so the
+# effective sample size is preserved while recent polls carry more influence.
+polls <- polls %>%
+  mutate(
+    age_days = as.numeric(difftime(max(midDate), midDate, units = "days")),
+    w = 0.5^(age_days / HALF_LIFE_DAYS),
+    w = w / mean(w)
+  )
+
 # Convert percentages to proportions
 polls <- polls %>%
   mutate(across(
@@ -427,7 +439,7 @@ names <- glue_collapse(
 #####Run model#####
 m1 <- brm(
   formula = bf(
-    outcome ~ 1 + s(time, k = 8, bs = "cs", m = 2) + (1 | pollster)
+    outcome | weights(w) ~ 1 + s(time, k = 8, bs = "cs", m = 2) + (1 | pollster)
   ),
   family = dirichlet(link = "logit", refcat = "Other"),
   prior = prior(normal(0, 1.5), class = "Intercept", dpar = "muPiS") +
