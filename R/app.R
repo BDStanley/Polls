@@ -1604,9 +1604,13 @@ server <- function(input, output, session) {
     punish_vote_shares(est_vote_shares(), coalition_defs(), punish_strength())
   })
 
-  # Whether the entered vote shares are within tolerance (1 pp of 100).
+  # The named shares (8 parties + MN) plus the "Other" residual always sum to
+  # 100 by construction, so validity is really about "Other" staying sane:
+  # non-negative (named shares not inflated past 100) and not implausibly large.
+  # Recency weighting legitimately lifts Other to ~3%, so allow up to 6 pp.
   vote_total_ok <- reactive({
-    abs(sum(est_input_values()[EST_PARTIES]) - 100) <= 1
+    other <- 100 - sum(est_input_values()[EST_PARTIES])
+    other >= -1 && other <= 6
   })
 
   # Seat allocation. While the vote total is out of tolerance we "do not
@@ -2272,9 +2276,10 @@ server <- function(input, output, session) {
     vals <- est_input_values()
     total <- sum(vals[EST_PARTIES])
     other <- vals["Other"]
-    # The named party/coalition shares must be within 1 percentage point of 100;
-    # only flag (red) when that criterion is not met.
-    ok <- abs(total - 100) <= 1
+    # "Other" is the residual after the named shares; it may legitimately be a
+    # few percent (minor parties + undecided). Flag only when it goes negative
+    # (named shares exceed 100) or grows implausibly large.
+    ok <- other >= -1 && other <= 6
     css_class <- if (ok) "sim-total" else "sim-total sim-total-bad"
     div(
       style = "margin-top:10px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;",
@@ -2291,7 +2296,7 @@ server <- function(input, output, session) {
       if (!ok) {
         tags$span(
           style = "color:#c0392b; font-size:0.85em;",
-          "The remainder must be no more than ± 1 pp – adjust the vote shares before continuing."
+          "The named shares must leave an Other remainder between 0 and 6 pp – adjust the vote shares before continuing."
         )
       }
     )
