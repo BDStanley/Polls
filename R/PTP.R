@@ -467,15 +467,46 @@ m1 <- brm(
   control = list(adapt_delta = .99, max_treedepth = 17)
 )
 
+# Consensus prediction: the trend averaged over the pollster houses we actually
+# observe, instead of the population hyper-mean returned by re_formula = NA.
+# With only ~9 pollsters, that hyper-mean carries a between-house / sqrt(9)
+# level uncertainty (~4-5pp for the big parties) that does NOT shrink as more
+# polls arrive, because it reflects disagreement about the average house rather
+# than sampling error. Predicting each observed house (re_formula = NULL) and
+# averaging the epred within each posterior draw marginalises out the house
+# deviations and returns the well-identified consensus level (CI ~1pp), which
+# is the estimand a poll-of-polls chart should show. Column layout matches
+# add_epred_draws: newdata columns + .category + .draw + .epred.
+consensus_epred <- function(object, newdata, ...) {
+  pollsters <- sort(unique(polls$pollster))
+  newdata <- newdata %>% mutate(.obs = row_number())
+  crossing(newdata, pollster = pollsters) %>%
+    add_epred_draws(object = object, newdata = ., re_formula = NULL, ...) %>%
+    ungroup() %>%
+    group_by(across(c(
+      all_of(setdiff(names(newdata), ".obs")),
+      ".obs",
+      ".category",
+      ".draw"
+    ))) %>%
+    summarise(.epred = mean(.epred), .groups = "drop") %>%
+    select(-.obs) %>%
+    # Return grouped by .category (as add_epred_draws does) so downstream
+    # blocks that renumber draws with row_number() stay per-category.
+    group_by(.category)
+}
+
 #####House effects#####
-# Calculate house effects by comparing pollster-specific predictions to average trend
-# Get the average trend (no random effects)
+# Calculate house effects by comparing each pollster to the consensus.
+# Baseline is the average over observed houses (consensus_epred), so a house
+# effect is that pollster's deviation from the average house and the effects
+# sum to ~0 across pollsters — rather than deviations from the population
+# hyper-mean, which are offset by an arbitrary per-category constant.
 today <- interval(min(polls$midDate), Sys.Date()) / years(1)
 
-avg_trend <- add_epred_draws(
+avg_trend <- consensus_epred(
   object = m1,
-  newdata = tibble(time = today),
-  re_formula = NA
+  newdata = tibble(time = today)
 ) %>%
   group_by(.category) %>%
   summarise(avg_support = median(.epred), .groups = "drop")
@@ -535,12 +566,12 @@ pollster_effects_draws <- expand_grid(
 ) %>%
   add_epred_draws(object = m1, newdata = ., re_formula = NULL)
 
-# Get average trend draws (without pollster effects)
-avg_trend_draws <- add_epred_draws(
+# Get consensus (average-over-houses) draws to use as the baseline
+avg_trend_draws <- consensus_epred(
   object = m1,
-  newdata = tibble(time = today),
-  re_formula = NA
+  newdata = tibble(time = today)
 ) %>%
+  ungroup() %>%
   select(.draw, .category, avg_epred = .epred)
 
 # Calculate house effects as difference
@@ -657,7 +688,8 @@ pred_dta <- tibble(
   time = seq(0, today, length.out = nrow(polls)),
   date = as.Date(time * 365, origin = min(polls$midDate))
 ) %>%
-  add_epred_draws(object = m1, newdata = ., re_formula = NA) %>%
+  # ndraws caps the per-house expansion (200 dates x 9 houses) memory footprint.
+  consensus_epred(object = m1, newdata = ., ndraws = 1000) %>%
   group_by(date, .category) %>%
   rename(party = .category) %>%
   mutate(
@@ -793,10 +825,9 @@ ggsave(
 )
 
 #####Latest plot#####
-plotdraws <- add_epred_draws(
+plotdraws <- consensus_epred(
   object = m1,
-  newdata = tibble(time = today),
-  re_formula = NA
+  newdata = tibble(time = today)
 ) %>%
   group_by(.category) %>%
   mutate(
@@ -1425,10 +1456,9 @@ ggsave(
 )
 
 #####Seats plot#####
-plotdraws_seats <- add_epred_draws(
+plotdraws_seats <- consensus_epred(
   object = m1,
   newdata = tibble(time = today),
-  re_formula = NA,
   ndraws = 1000
 ) %>%
   mutate(.draw = row_number()) %>%
@@ -1834,11 +1864,10 @@ weekly_summaries <- map_dfr(target_dates, function(target_date) {
   # Convert date to model time scale
   t <- interval(min_date, target_date) / years(1)
 
-  # Get posterior draws at this date
-  draws <- add_epred_draws(
+  # Get posterior draws at this date (consensus over observed houses)
+  draws <- consensus_epred(
     object = m1,
     newdata = tibble(time = t),
-    re_formula = NA,
     ndraws = 500
   ) %>%
     mutate(
