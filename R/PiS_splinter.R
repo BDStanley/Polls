@@ -159,18 +159,20 @@ VETO_MAJORITY <- 276
 CONSTITUTIONAL_MAJORITY <- 307
 
 #####Scenario parameters#####
-# The analysis is built around three scenarios, defined by the share of
+# The analysis is built around four scenarios, defined by the share of
 # the survey-measured available pool that the new party actually
-# converts: a half, three quarters, all of it. They are not equally
-# likely. calibrate_realisation() below measures how much attitudinal
-# availability turned into votes in the NCN panel between May and
-# October 2023, and the answer is 23%, so even the lowest of the three
-# is an optimistic reading of the base rate. The two published polls of
-# a hypothetical Morawiecki party, both fielded 16-17 July 2026, put it
-# at 2.33% (Instytut Badań Pollster) and 6.9% (United Surveys/IBRiS) —
-# the range these scenarios have to speak to.
-SCENARIO_LEVELS <- c(0.50, 0.75, 1.00)
+# converts: a quarter, a half, three quarters, all of it. They are not
+# equally likely. calibrate_realisation() below measures how much
+# attitudinal availability turned into votes in the NCN panel between May
+# and October 2023, and the answer is 23%, so the lowest of the four is
+# the one that matches the observed base rate and the other three are
+# progressively more optimistic. The two published polls of a
+# hypothetical Morawiecki party, both fielded 16-17 July 2026, put it at
+# 2.33% (Instytut Badań Pollster) and 6.9% (United Surveys/IBRiS) — the
+# range these scenarios have to speak to.
+SCENARIO_LEVELS <- c(0.25, 0.50, 0.75, 1.00)
 SCENARIO_LABELS <- c(
+  "Ćwierć puli",
   "Połowa puli",
   "Trzy czwarte puli",
   "Cała pula"
@@ -607,7 +609,7 @@ bdcs_pools <- calibrate_bdcs()
 realisation_cal <- calibrate_realisation()
 
 # The panel rate does not set any scenario; it is the yardstick against
-# which the three scenarios are read.
+# which the four scenarios are read.
 REALISATION_OBSERVED <- if (is.null(realisation_cal)) {
   NA_real_
 } else {
@@ -945,7 +947,7 @@ baseline <- simulate_election(
   urban_tilt = 0
 )
 
-#####The three scenarios#####
+#####The four scenarios#####
 # Each scenario fixes the conversion rate and lets the poll posterior and
 # the transfer draws supply the uncertainty, so the three are directly
 # comparable: the only thing that differs between them is how much of
@@ -1326,7 +1328,7 @@ scenario_vote_fig <- splinter_vote_draws %>%
   labs(
     y = "",
     x = "",
-    title = "Wynik nowej partii w trzech scenariuszach",
+    title = "Wynik nowej partii w czterech scenariuszach",
     subtitle = str_wrap(
       paste(
         "Scenariusze różnią się wyłącznie tym, jaką część dostępnej puli",
@@ -1824,7 +1826,7 @@ if (file.exists(const_map_path)) {
 
 # Constituency seats from a single allocation at the posterior median,
 # for the middle scenario.
-MAP_LEVEL <- SCENARIO_LEVELS[2]
+MAP_LEVEL <- 0.75
 median_shares <- matrix(
   apply(shares_mat, 2, median),
   nrow = 1,
@@ -1896,7 +1898,7 @@ splinter_map <- ggplot(map_data) +
     title = "Liczba mandatów rozłamowców z PiS w okręgach wyborczych",
     subtitle = str_wrap(
       paste0(
-        "Scenariusz środkowy: nowa partia pozyskuje ",
+        "Scenariusz trzech czwartych: nowa partia pozyskuje ",
         pl_pct(MAP_LEVEL),
         " dostępnej jej puli. Rozkład regionalny odzwierciedla profile ",
         "poparcia partii, które oddają jej głosy."
@@ -1956,7 +1958,7 @@ if (is.null(realisation_cal)) {
   )
 }
 cat(
-  "\nThree scenarios convert",
+  "\nFour scenarios convert",
   paste(scales::percent(SCENARIO_LEVELS), collapse = ", "),
   "of that pool\n"
 )
