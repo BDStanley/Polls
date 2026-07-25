@@ -1153,16 +1153,7 @@ pools_fig <- ggplot(pool_plot_data, aes(x = pool, y = party, fill = party)) +
     x = "Odsetek wyborców partii dostępnych dla centroprawicowego rozłamu",
     y = "",
     title = "Do ilu wyborców każdej partii mógłby dotrzeć umiarkowany rozłam z PiS",
-    subtitle = str_wrap(
-      paste(
-        "Dostępni to w przypadku PiS wyborcy, którzy lubią Morawieckiego i wolą",
-        "go od Kaczyńskiego, oraz ci o gospodarczo prawicowych poglądach, którzy",
-        "nie są chłodni ani wobec PiS, ani wobec partii centrowych; w przypadku",
-        "pozostałych partii — wyłącznie ta druga grupa. To górna granica",
-        "możliwości nowej partii, a nie prognoza jej wyniku."
-      ),
-      width = 110
-    ),
+    subtitle = NULL,
     caption = ""
   ) +
   theme_plots()
@@ -1179,7 +1170,7 @@ ggsave(
 )
 
 #####Figure: counterfactual vote shares#####
-make_vote_figure <- function(run, title, subtitle) {
+make_vote_figure <- function(run, title) {
   vote_draws <- as_tibble(run$votes) %>%
     mutate(.draw = row_number()) %>%
     pivot_longer(-.draw, names_to = "party", values_to = "vote") %>%
@@ -1231,7 +1222,7 @@ make_vote_figure <- function(run, title, subtitle) {
       y = "",
       x = "",
       title = title,
-      subtitle = str_wrap(subtitle, width = 110),
+      subtitle = NULL,
       caption = "Liczby to mediany; szerokość pasma pokazuje niepewność oszacowania."
     ) +
     theme_plots()
@@ -1240,12 +1231,7 @@ make_vote_figure <- function(run, title, subtitle) {
 iwalk(scenario_runs, function(run, label) {
   fig <- make_vote_figure(
     run,
-    paste0("Poparcie partii w scenariuszu: ", tolower(label)),
-    paste0(
-      "Nowa partia pozyskuje ",
-      pl_pct(SCENARIO_LEVELS[match(label, SCENARIO_LABELS)]),
-      " dostępnej jej puli wyborców w każdym elektoracie. Linia przerywana: próg 5%."
-    )
+    paste0("Poparcie partii w scenariuszu: ", tolower(label))
   )
   ggsave(
     fig,
@@ -1329,14 +1315,7 @@ scenario_vote_fig <- splinter_vote_draws %>%
     y = "",
     x = "",
     title = "Wynik nowej partii w czterech scenariuszach",
-    subtitle = str_wrap(
-      paste(
-        "Scenariusze różnią się wyłącznie tym, jaką część dostępnej puli",
-        "wyborców nowa partia rzeczywiście pozyskuje. Linia przerywana:",
-        "próg 5%."
-      ),
-      width = 110
-    ),
+    subtitle = NULL,
     caption = "Liczby to mediany; szerokość pasma pokazuje niepewność oszacowania."
   ) +
   theme_plots()
@@ -1471,7 +1450,7 @@ coalition_labels <- function(coalitions) {
   )
 }
 
-make_seats_figure <- function(frame, title, subtitle, coalition_label_df) {
+make_seats_figure <- function(frame, title, coalition_label_df) {
   ggplot(
     data = frame,
     mapping = aes(x = party, y = y, fill = party)
@@ -1532,7 +1511,7 @@ make_seats_figure <- function(frame, title, subtitle, coalition_label_df) {
       x = "",
       y = "Liczba mandatów",
       title = title,
-      subtitle = str_wrap(subtitle, width = 120),
+      subtitle = NULL,
       caption = "Wartości w nawiasach kursywą pokazują zmianę względem wyniku wyborów z 2023 roku; w nawiasach pod nimi — 80-procentowe przedziały wiarygodności."
     ) +
     theme_plots()
@@ -1548,20 +1527,9 @@ scenario_coalitions <- map(scenario_frames, coalitions_for)
 
 iwalk(scenario_frames, function(frame, label) {
   level <- SCENARIO_LEVELS[match(label, SCENARIO_LABELS)]
-  vote <- scenario_summaries$vote_med[
-    scenario_summaries$scenario == label &
-      scenario_summaries$party == "Splinter"
-  ]
   fig <- make_seats_figure(
     frame,
     paste0("Sejm w scenariuszu: ", tolower(label)),
-    paste0(
-      "Nowa partia pozyskuje ",
-      pl_pct(level),
-      " dostępnej jej puli, co daje jej ",
-      pl_num(vote),
-      "% głosów. Mediana szacowanej liczby mandatów; suma może nie wynosić 460."
-    ),
     coalition_labels(scenario_coalitions[[label]])
   )
   ggsave(
@@ -1654,15 +1622,7 @@ scenario_fig <- ggplot(
     x = "Poparcie dla nowej partii",
     y = "Liczba mandatów",
     title = "Koszt rozłamu",
-    subtitle = str_wrap(
-      paste(
-        "Każdy punkt to scenariusz, w którym nowa partia pozyskuje inną część dostępnej",
-        "puli wyborców — od zera (po lewej) do całości (po prawej).",
-        "Blok prawicy = PiS + Konfederacja + KKP + rozłamowcy; blok rządzący =",
-        "KO + Polska 2050 + PSL + Lewica."
-      ),
-      width = 110
-    ),
+    subtitle = NULL,
     caption = "Mediany z rozkładów a posteriori. Poniżej progu 5% głosy nowej partii przepadają, a blok prawicy traci mandaty, nie zyskując żadnych."
   ) +
   theme_plots()
@@ -1711,14 +1671,7 @@ threshold_fig <- scenarios %>%
     x = "Poparcie dla nowej partii",
     y = "Prawdopodobieństwo",
     title = "Ryzyko progu wyborczego i arytmetyka koalicyjna",
-    subtitle = str_wrap(
-      paste(
-        "Prawdopodobieństwa a posteriori w tych samych scenariuszach.",
-        "Przetrwanie samej nowej partii jest osią, wokół której obraca się",
-        "cała pozostała arytmetyka."
-      ),
-      width = 110
-    ),
+    subtitle = NULL,
     caption = ""
   ) +
   theme_plots()
@@ -1785,15 +1738,7 @@ scenario_sources_fig <- ggplot(
     x = "Wynik nowej partii (punkty procentowe) i jego pochodzenie",
     y = "",
     title = "Skąd pochodzą głosy nowej partii",
-    subtitle = str_wrap(
-      paste(
-        "Skład poparcia jest w każdym scenariuszu taki sam — zmienia się",
-        "tylko jego wielkość. Ponad dwie trzecie głosów nowej partii",
-        "pochodzi z dotychczasowej prawicy niezależnie od tego, jak dobrze",
-        "sobie ona radzi. Linia przerywana: próg 5%."
-      ),
-      width = 110
-    ),
+    subtitle = NULL,
     caption = ""
   ) +
   theme_plots()
@@ -1896,15 +1841,7 @@ splinter_map <- ggplot(map_data) +
   ) +
   labs(
     title = "Liczba mandatów rozłamowców z PiS w okręgach wyborczych",
-    subtitle = str_wrap(
-      paste0(
-        "Scenariusz trzech czwartych: nowa partia pozyskuje ",
-        pl_pct(MAP_LEVEL),
-        " dostępnej jej puli. Rozkład regionalny odzwierciedla profile ",
-        "poparcia partii, które oddają jej głosy."
-      ),
-      width = 110
-    ),
+    subtitle = NULL,
     caption = ""
   ) +
   theme_plots_map()
