@@ -669,7 +669,12 @@ saveRDS(splinter_pools, here("data", "splinter_pools.rds"))
 #####Read in, adjust and subset data#####
 source(here("R", "poll_data_scraper.R"))
 
+# This is a counterfactual built on an intact PiS: the transfer model below
+# takes the split's votes out of PiS itself. Polls that already report R+
+# separately have done that subtraction for us, so fold R+ back in before the
+# base model sees them, or the split is counted twice.
 polls <- polls_cleaned %>%
+  mutate(PiS = PiS + Rplus) %>%
   select(startDate, endDate, org, all_of(PARTY_COLS[1:8]), Other, DK) %>%
   mutate(
     org = as.factor(org),

@@ -104,11 +104,24 @@ standardize_pollster_name <- function(pollster_name) {
   }
 }
 
+# Strip Wikipedia footnote markers ("7.4[b]", "7.25[h]") before coercing a
+# reported share to a number. Without this the whole cell parses to NA and the
+# reading is silently lost.
+parse_pct <- function(x) {
+  as.numeric(str_remove_all(as.character(x), "\\[[a-zA-Z0-9]+\\]"))
+}
+
 # Main cleaning process
 clean_polish_poll_data <- function(polls, year) {
-  # Keep at most the first 14 columns, but don't error if the source table
+  # Keep at most the first 15 columns, but don't error if the source table
   # has fewer (Wikipedia's column count changes as parties are added/removed).
-  polls_clean_cols <- polls[, seq_len(min(ncol(polls), 14))]
+  polls_clean_cols <- polls[, seq_len(min(ncol(polls), 15))]
+
+  # R+ (Rozwój Plus) only appears once the table starts testing it, so the
+  # earlier tables have no such column at all.
+  if (!"R+" %in% names(polls_clean_cols)) {
+    polls_clean_cols$`R+` <- NA_character_
+  }
 
   cleaned_data <- polls_clean_cols %>%
     filter(
@@ -126,6 +139,7 @@ clean_polish_poll_data <- function(polls, year) {
       pollster_raw = `Polling firm/Link`,
       fieldwork_date = Fieldworkdate,
       law_and_justice = `PiS`,
+      rozwoj_plus = `R+`,
       civic_coalition = `KO`,
       poland_2050 = `Polska 2050`,
       polish_peoples_party = `PSL`,
@@ -140,18 +154,28 @@ clean_polish_poll_data <- function(polls, year) {
       pollster = sapply(pollster_raw, standardize_pollster_name)
     ) %>%
     select(-pollster_raw) %>%
+    # Wikipedia merges the PiS and R+ cells (colspan=2) in every poll that did
+    # not test R+ as a separate party, so html_table() copies the PiS figure
+    # across into the R+ column. An identical string therefore means R+ is
+    # still counted inside PiS, not that it polled at PiS's level.
     mutate(
-      law_and_justice = as.numeric(law_and_justice),
-      civic_coalition = as.numeric(civic_coalition),
-      poland_2050 = as.numeric(poland_2050),
-      polish_peoples_party = as.numeric(polish_peoples_party),
-      the_left = as.numeric(the_left),
-      together = as.numeric(together),
-      confederation = as.numeric(confederation),
-      confederation_crown = as.numeric(confederation_crown),
-      dont_know = as.numeric(dont_know)
+      rplus_separate = !is.na(rozwoj_plus) &
+        as.character(rozwoj_plus) != as.character(law_and_justice)
     ) %>%
     mutate(
+      law_and_justice = parse_pct(law_and_justice),
+      rozwoj_plus = ifelse(rplus_separate, parse_pct(rozwoj_plus), 0),
+      civic_coalition = parse_pct(civic_coalition),
+      poland_2050 = parse_pct(poland_2050),
+      polish_peoples_party = parse_pct(polish_peoples_party),
+      the_left = parse_pct(the_left),
+      together = parse_pct(together),
+      confederation = parse_pct(confederation),
+      confederation_crown = parse_pct(confederation_crown),
+      dont_know = parse_pct(dont_know)
+    ) %>%
+    mutate(
+      rozwoj_plus = ifelse(is.na(rozwoj_plus), 0, rozwoj_plus),
       the_left = ifelse(is.na(the_left), 0, the_left),
       together = ifelse(is.na(together), 0, together),
       polish_peoples_party = ifelse(
@@ -167,6 +191,16 @@ clean_polish_poll_data <- function(polls, year) {
       ),
       dont_know = ifelse(is.na(dont_know), 0, dont_know)
     )
+
+  # Where a pollster published both a baseline reading (R+ inside PiS) and an
+  # R+ scenario reading from the same fieldwork, Wikipedia lists them as two
+  # rows. Keep the scenario reading, which is the one that separates the two
+  # parties, and drop its baseline twin so the fieldwork enters the model once.
+  fieldwork_key <- paste(cleaned_data$pollster, cleaned_data$fieldwork_date)
+  scenario_keys <- fieldwork_key[cleaned_data$rplus_separate]
+  cleaned_data <- cleaned_data[
+    !(!cleaned_data$rplus_separate & fieldwork_key %in% scenario_keys),
+  ]
 
   date_results <- lapply(cleaned_data$fieldwork_date, function(date_string) {
     parse_fieldwork_dates(date_string, year)
@@ -207,6 +241,7 @@ clean_polish_poll_data <- function(polls, year) {
     ) %>%
     mutate(
       total_parties = law_and_justice +
+        rozwoj_plus +
         civic_coalition +
         polska_2050_split +
         psl_split +
@@ -222,6 +257,7 @@ clean_polish_poll_data <- function(polls, year) {
       startDate = start_date,
       endDate = end_date,
       PiS = law_and_justice,
+      Rplus = rozwoj_plus,
       KO = civic_coalition,
       Polska2050 = polska_2050_split,
       PSL = psl_split,
@@ -255,10 +291,18 @@ cat(
   as.character(max(polls_cleaned$endDate)),
   "\n"
 )
-cat("Missing 'DK' values:", sum(is.na(polls_cleaned$DK)), "\n\n")
+cat("Missing 'DK' values:", sum(is.na(polls_cleaned$DK)), "\n")
+cat(
+  "Polls reporting R+ separately from PiS:",
+  sum(polls_cleaned$Rplus > 0),
+  "of",
+  nrow(polls_cleaned),
+  "\n\n"
+)
 
 numeric_cols <- c(
   "PiS",
+  "Rplus",
   "KO",
   "Polska2050",
   "PSL",

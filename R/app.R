@@ -33,6 +33,9 @@ showtext_opts(dpi = 96)
 # --- Configuration ---
 PARTY_COLORS <- c(
   "PiS" = "blue",
+  # Rozwój Plus, the centre-right breakaway from PiS. Colour as used for the
+  # party in the Wikipedia polling table this project scrapes.
+  "R+" = "#4399d3",
   "KO" = "orange",
   "Polska 2050" = "goldenrod",
   "PSL" = "darkgreen",
@@ -46,6 +49,7 @@ PARTY_COLORS <- c(
 
 PARTY_ORDER <- c(
   "PiS",
+  "R+",
   "KO",
   "Polska 2050",
   "PSL",
@@ -63,10 +67,19 @@ HEMICYCLE_ORDER <- c(
   "Polska 2050",
   "PSL",
   "MN",
+  "R+",
   "PiS",
   "Konfederacja",
   "KKP"
 )
+
+# Shiny input id for a party's editable vote-share box. Party names are not
+# all syntactic ("Polska 2050", "R+"), and a "+" in an id breaks the jQuery
+# selector updateNumericInput() uses, so everything non-alphanumeric is
+# collapsed to an underscore.
+est_input_id <- function(party) {
+  paste0("est_", gsub("[^A-Za-z0-9]+", "_", party))
+}
 
 theme_plots <- function(base_size = 16, base_family = PLOT_FONT) {
   theme_bw(base_size, base_family) +
@@ -172,6 +185,7 @@ weights <- readRDS(here("data", "sim_weights.rds"))
 # Parties for the simulator (order for sliders and D'Hondt)
 SIM_PARTIES <- c(
   "PiS",
+  "R+",
   "KO",
   "Polska 2050",
   "PSL",
@@ -247,6 +261,7 @@ allocate_seats <- function(vote_shares_pct) {
     "Razem",
     "MN",
     "PiS",
+    "R+",
     "Polska 2050",
     "PSL"
   )
@@ -264,6 +279,7 @@ allocate_seats <- function(vote_shares_pct) {
   # Map parties to their constituency weight coefficients
   coef_map <- c(
     "PiS" = "PiScoef",
+    "R+" = "PiScoef",
     "KO" = "KOcoef",
     "Lewica" = "Lewicacoef",
     "Razem" = "Lewicacoef",
@@ -324,6 +340,7 @@ allocate_seats_with_coalitions <- function(
   # Map parties to their constituency weight coefficient columns
   coef_map <- c(
     "PiS" = "PiScoef",
+    "R+" = "PiScoef",
     "KO" = "KOcoef",
     "Lewica" = "Lewicacoef",
     "Razem" = "Lewicacoef",
@@ -340,6 +357,7 @@ allocate_seats_with_coalitions <- function(
     "Lewica" = "Lewica",
     "PSL" = "PSL",
     "PiS" = "PiS",
+    "R+" = "R+",
     "Konfederacja" = "Konf.",
     "KKP" = "KKP",
     "Razem" = "Razem",
@@ -356,6 +374,7 @@ allocate_seats_with_coalitions <- function(
     "Razem",
     "MN",
     "PiS",
+    "R+",
     "Polska 2050",
     "PSL"
   )
@@ -493,6 +512,8 @@ IDEOLOGY_POSITIONS <- c(
   "KO" = 32,
   "Polska 2050" = 44,
   "PSL" = 52,
+  # A more centre-right PiS: closer to the centre than the party it left.
+  "R+" = 60,
   "PiS" = 66,
   "Konfederacja" = 84,
   "KKP" = 100
@@ -539,6 +560,9 @@ punish_vote_shares <- function(vote_shares_pct, coalitions, strength = 1) {
 }
 
 # Incompatible coalition partners (cannot sit in the same government).
+# R+ is treated as a more centre-right PiS: it keeps PiS's incompatibility with
+# the radical left but, having broken with PiS over its direction, it is not
+# barred from KO the way PiS is. Only Razem is ruled out.
 FORBIDDEN_PAIRS <- list(
   c("Konfederacja", "Lewica"),
   c("Konfederacja", "Razem"),
@@ -546,7 +570,8 @@ FORBIDDEN_PAIRS <- list(
   c("KKP", "Razem"),
   c("KKP", "KO"),
   c("PiS", "KO"),
-  c("PiS", "Lewica")
+  c("PiS", "Lewica"),
+  c("R+", "Razem")
 )
 
 # Are a set of parties mutually compatible (no forbidden pair present)?
@@ -1370,6 +1395,7 @@ build_coalitions <- function(get_seats_fn) {
     "Lewica" = "Lewica",
     "PSL" = "PSL",
     "PiS" = "PiS",
+    "R+" = "R+",
     "Konfederacja" = "Konf.",
     "KKP" = "KKP",
     "Razem" = "Razem"
@@ -1390,7 +1416,8 @@ build_coalitions <- function(get_seats_fn) {
     c("KKP", "Razem"),
     c("KKP", "KO"),
     c("PiS", "KO"),
-    c("PiS", "Lewica")
+    c("PiS", "Lewica"),
+    c("R+", "Razem")
   )
 
   is_compatible <- function(parties) {
@@ -1456,6 +1483,7 @@ PARTY_SHORT <- c(
   "Lewica" = "Lewica",
   "PSL" = "PSL",
   "PiS" = "PiS",
+  "R+" = "R+",
   "Konfederacja" = "Konf.",
   "KKP" = "KKP",
   "Razem" = "Razem",
@@ -1574,7 +1602,7 @@ server <- function(input, output, session) {
   est_input_values <- reactive({
     vals <- est_default_shares(selected_date())
     for (p in EST_PARTIES) {
-      v <- input[[paste0("est_", gsub(" ", "_", p))]]
+      v <- input[[est_input_id(p)]]
       if (!is.null(v) && !is.na(v)) {
         vals[p] <- v
       }
@@ -1703,6 +1731,7 @@ server <- function(input, output, session) {
       "Lewica" = "Lewica",
       "PSL" = "PSL",
       "PiS" = "PiS",
+      "R+" = "R+",
       "Konfederacja" = "Konf.",
       "KKP" = "KKP",
       "Razem" = "Razem",
@@ -1739,6 +1768,7 @@ server <- function(input, output, session) {
     used <- unlist(coals)
     pickable <- c(
       "PiS",
+      "R+",
       "KO",
       "Polska 2050",
       "PSL",
@@ -1779,7 +1809,7 @@ server <- function(input, output, session) {
     for (p in EST_PARTIES) {
       updateNumericInput(
         session,
-        paste0("est_", gsub(" ", "_", p)),
+        est_input_id(p),
         value = round(defaults[p], 1)
       )
     }
@@ -2170,7 +2200,7 @@ server <- function(input, output, session) {
       div(
         class = "est-vote-box",
         numericInput(
-          inputId = paste0("est_", gsub(" ", "_", p)),
+          inputId = est_input_id(p),
           label = NULL,
           value = round(vals[p], 1),
           min = 0,
