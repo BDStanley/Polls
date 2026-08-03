@@ -256,6 +256,10 @@ clean_polish_poll_data <- function(polls, year) {
       org = pollster,
       startDate = start_date,
       endDate = end_date,
+      # Carried through because "R+ was not offered as an option" and "R+ was
+      # offered and scored 0" are different observations: the model has to
+      # treat the first as missing rather than as a measured zero.
+      rplus_separate,
       PiS = law_and_justice,
       Rplus = rozwoj_plus,
       KO = civic_coalition,
