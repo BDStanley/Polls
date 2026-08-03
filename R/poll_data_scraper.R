@@ -154,13 +154,23 @@ clean_polish_poll_data <- function(polls, year) {
       pollster = sapply(pollster_raw, standardize_pollster_name)
     ) %>%
     select(-pollster_raw) %>%
-    # Wikipedia merges the PiS and R+ cells (colspan=2) in every poll that did
-    # not test R+ as a separate party, so html_table() copies the PiS figure
-    # across into the R+ column. An identical string therefore means R+ is
-    # still counted inside PiS, not that it polled at PiS's level.
+    # Wikipedia merges a splinter's cell with its parent's (colspan=2) in every
+    # poll that did not test the two separately, so html_table() copies the
+    # parent's figure across into the splinter's column. An identical string
+    # therefore means the splinter is still counted inside the parent, not that
+    # it polled at the parent's level. This applies to both splits the model
+    # handles: PiS / R+, and Konfederacja / KKP.
+    #
+    # Testing that the cell parses to a number is what rules out the other two
+    # ways a poll can fail to offer the splinter: the column being absent from
+    # the table altogether (NA), and the cell being left blank (""). A blank
+    # cell differs from the parent's cell as a string, so an is.na() test alone
+    # would wave 34 pre-split 2025 polls through as separately polled.
     mutate(
-      rplus_separate = !is.na(rozwoj_plus) &
-        as.character(rozwoj_plus) != as.character(law_and_justice)
+      rplus_separate = !is.na(parse_pct(rozwoj_plus)) &
+        as.character(rozwoj_plus) != as.character(law_and_justice),
+      kkp_separate = !is.na(parse_pct(confederation_crown)) &
+        as.character(confederation_crown) != as.character(confederation)
     ) %>%
     mutate(
       law_and_justice = parse_pct(law_and_justice),
@@ -171,7 +181,11 @@ clean_polish_poll_data <- function(polls, year) {
       the_left = parse_pct(the_left),
       together = parse_pct(together),
       confederation = parse_pct(confederation),
-      confederation_crown = parse_pct(confederation_crown),
+      confederation_crown = ifelse(
+        kkp_separate,
+        parse_pct(confederation_crown),
+        0
+      ),
       dont_know = parse_pct(dont_know)
     ) %>%
     mutate(
@@ -219,8 +233,6 @@ clean_polish_poll_data <- function(polls, year) {
   final_data <- cleaned_data %>%
     mutate(
       june_17_2025 = as.Date("2025-06-17"),
-      june_10_2025 = as.Date("2025-06-10"),
-      march_10_2025 = as.Date("2025-03-10"),
       trzecia_droga_combined = ifelse(
         end_date > june_17_2025,
         poland_2050 + polish_peoples_party,
@@ -229,15 +241,7 @@ clean_polish_poll_data <- function(polls, year) {
       polska_2050_split = trzecia_droga_combined * 0.6,
       psl_split = trzecia_droga_combined * 0.4,
       lewica_separate = the_left,
-      razem_separate = together,
-      confederation_clean = ifelse(
-        end_date <= march_10_2025,
-        confederation,
-        confederation
-      ),
-      # KKP handling: separate column from June 10, 2025 onwards
-      kkp_separate = ifelse(end_date >= june_10_2025, confederation_crown, 0),
-      kkp_to_other = ifelse(end_date < june_10_2025, confederation_crown, 0)
+      razem_separate = together
     ) %>%
     mutate(
       total_parties = law_and_justice +
@@ -247,19 +251,26 @@ clean_polish_poll_data <- function(polls, year) {
         psl_split +
         lewica_separate +
         razem_separate +
-        confederation_clean +
-        kkp_separate +
+        confederation +
+        confederation_crown +
         dont_know,
-      Other = pmax(0, 100 - total_parties + kkp_to_other)
+      # KKP is 0 wherever it was not polled separately, and those voters are
+      # inside the Konfederacja figure — which is exactly the bloc the model
+      # wants, so nothing is routed to Other. Routing the KKP cell to Other for
+      # early polls used to add the colspan-copied Konfederacja figure to the
+      # residual, pushing row totals to 113-115% in early 2025 and diluting
+      # every party once the rows were normalised.
+      Other = pmax(0, 100 - total_parties)
     ) %>%
     select(
       org = pollster,
       startDate = start_date,
       endDate = end_date,
-      # Carried through because "R+ was not offered as an option" and "R+ was
-      # offered and scored 0" are different observations: the model has to
-      # treat the first as missing rather than as a measured zero.
+      # Carried through because "the splinter was not offered as an option" and
+      # "it was offered and scored 0" are different observations: the model has
+      # to treat the first as missing rather than as a measured zero.
       rplus_separate,
+      kkp_separate,
       PiS = law_and_justice,
       Rplus = rozwoj_plus,
       KO = civic_coalition,
@@ -267,8 +278,8 @@ clean_polish_poll_data <- function(polls, year) {
       PSL = psl_split,
       Lewica = lewica_separate,
       Razem = razem_separate,
-      Konfederacja = confederation_clean,
-      KKP = kkp_separate,
+      Konfederacja = confederation,
+      KKP = confederation_crown,
       DK = dont_know,
       Other
     ) %>%
@@ -298,11 +309,38 @@ cat(
 cat("Missing 'DK' values:", sum(is.na(polls_cleaned$DK)), "\n")
 cat(
   "Polls reporting R+ separately from PiS:",
-  sum(polls_cleaned$Rplus > 0),
+  sum(polls_cleaned$rplus_separate),
   "of",
   nrow(polls_cleaned),
-  "\n\n"
+  "\n"
 )
+cat(
+  "Polls reporting KKP separately from Konfederacja:",
+  sum(polls_cleaned$kkp_separate),
+  "of",
+  nrow(polls_cleaned),
+  "\n"
+)
+# Rows should now sum to 100 once DK and Other are included. They did not while
+# the KKP cell was routed to Other for early polls; see the Other calculation.
+row_totals <- rowSums(polls_cleaned[, c(
+  "PiS",
+  "Rplus",
+  "KO",
+  "Polska2050",
+  "PSL",
+  "Lewica",
+  "Razem",
+  "Konfederacja",
+  "KKP",
+  "DK",
+  "Other"
+)])
+cat(sprintf(
+  "Row totals: %.1f - %.1f (should be ~100)\n\n",
+  min(row_totals),
+  max(row_totals)
+))
 
 numeric_cols <- c(
   "PiS",

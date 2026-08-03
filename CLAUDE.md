@@ -27,57 +27,77 @@ constituency shapefile). `data/const_map_cartogram.rds` and `data/sim_weights.rd
 are consumed by `deploy.R`/`app.R` but written by **no** script in the repo —
 don't delete them. `data/pred_dta.rds` is a stale leftover nothing reads.
 
-## PiS and R+ are modelled as one bloc
+## Splinter parties are modelled as blocs
 
-This is the thing most likely to trip you up. **R+ (Rozwój Plus) is not a
-Dirichlet category.** The model is two-stage:
+This is the thing most likely to trip you up. **Neither R+ nor KKP is a
+Dirichlet category.** Two splinters have broken away during the series, and both
+are handled the same way, driven by `SPLIT_SPECS` in `PTP.R`:
+
+| Splinter | Parent | Launch | Stage-2 spec |
+|---|---|---|---|
+| R+ (Rozwój Plus) | PiS | 2026-07-24 | intercept-only (~6 splitting polls) |
+| KKP (Konf. Korony Polskiej) | Konfederacja | 2025-06-09 | smooth + house effects (~142) |
+
+The model is two-stage:
 
 1. **Stage 1** (`m1`) fits the Dirichlet over `PARTY_COLS_BLOC`, in which `PiS`
-   means the whole **PiS + R+ bloc**. Every poll in the series measures that
-   quantity, so the outcome matrix has no R+ column and no `muRplus` dpar.
-2. **Stage 2** (`m_split`) fits a Beta regression for R+'s *share of the bloc*,
-   on the handful of polls that actually offered R+ as a separate option.
-3. `split_rplus()` recombines them draw-by-draw into `PiS = bloc × (1 − share)`
-   and `Rplus = bloc × share`. It is called inside `consensus_epred()`, so every
-   consumer downstream sees an `Rplus` category and needs no special handling.
+   means the whole **PiS + R+ bloc** and `Konfederacja` the whole
+   **Konfederacja + KKP bloc**. Every poll in the series measures those
+   quantities, so the outcome matrix has no R+ or KKP column and no `muRplus` /
+   `muKKP` dpar.
+2. **Stage 2** (`split_models`) fits a Beta regression per split for the
+   splinter's *share of its bloc*, on the polls that offered it separately.
+3. `split_all()` recombines them draw-by-draw into `parent = bloc × (1 − share)`
+   and `child = bloc × share`. It is called inside `consensus_epred()`, so every
+   consumer downstream sees `Rplus` and `KKP` categories and needs no special
+   handling.
 
-Why: only a few houses split R+ out; the rest still read out a single PiS figure
-containing R+'s voters. Coding those as `R+ = 0` hands the Dirichlet ~200
-observations of a near-zero proportion, whose log-likelihood contribution
+Why: houses did not all start splitting each parent at once, so the raw series
+mixes two quantities under the parent's name. Coding "not offered" as `0` hands
+the Dirichlet a mass of near-zero observations, whose log-likelihood contribution
 `(phi*mu − 1) * log(y)` — `log(0.0005) = −7.6` against `log(0.07) = −2.7` for a
-real reading — swamps the genuine readings and pins R+ to the floor no matter
-what the smooth does. Before this was fixed, R+'s trend line sat flat at ~0.2%
-while the polls that measured it read 4.9–8.2%.
+real reading — swamps the genuine readings and pins the splinter to the floor no
+matter what the smooth does. Before this was fixed, R+'s trend line sat flat at
+~0.2% while the polls that measured it read 4.9–8.2%.
 
 Consequences to keep in mind:
 
-- `rplus_separate` (set in the scraper) is what distinguishes "R+ wasn't offered"
-  from "R+ scored zero". Never let those collapse again.
-- **`RPLUS_LAUNCH_DATE` (2026-07-24) is the date R+ was founded**, hardcoded on
-  purpose. It is a fact about the party system, not something to infer from when
-  pollsters started asking — some houses offered R+ months earlier, and those
-  readings measured *potential* support for a hypothetical party. Before this
-  date the split is not applied at all: R+ is 0 and PiS is the whole bloc.
-- Those pre-launch hypothetical readings are still used by **stage 2** — they
-  measure how the centre-right electorate divides, which is what stage 2 wants —
-  but not by the chart: the trend line starts at the launch date, and their
-  scatter points show only the bloc as PiS, with no R+ point. The
-  `hypothetical` flag on `rplus_split_polls` marks them. If the stage-2 time
-  trend ever switches on, revisit this: they sit at earlier times and would pull
-  its slope.
-- **House effects are reported on the unsplit bloc**, labelled `PiS + R+`. The
-  two `consensus_epred(..., split = FALSE)` calls in that block are deliberate:
-  stage 2 has no house term, so splitting there would just rescale the bloc's
-  house effect and print it twice.
+- `rplus_separate` / `kkp_separate` (set in the scraper) are what distinguish
+  "not offered" from "scored zero". Never let those collapse again. Both test
+  that the cell **parses to a number**, which is what rules out all three
+  not-offered cases: column absent (`NA`), cell blank (`""`), and Wikipedia's
+  colspan merge (cell string identical to the parent's).
+- **Launch dates are hardcoded in `SPLIT_SPECS`**, on purpose. They are facts
+  about the party system, not something to infer from when pollsters started
+  asking — a few houses offered each splinter before it existed, and those
+  readings measured *potential* support for a hypothetical party. Before its
+  launch a split is not applied at all: the splinter is 0 and the parent holds
+  the whole bloc.
+- Those pre-launch readings are still used by **stage 2** — they measure how the
+  parent's electorate divides, which is what stage 2 wants — but not by the
+  chart: each line starts at its launch date, and those polls' scatter points
+  show only the bloc as the parent, with no splinter point. The `hypothetical`
+  flag on `split_data[[child]]` marks them.
+- **House effects are reported on the unsplit blocs**, labelled `PiS + R+` and
+  `Konfederacja + KKP`. The two `consensus_epred(..., split = FALSE)` calls in
+  that block are deliberate: the bloc is what every house has read out across the
+  whole series, so it is the level at which they can be compared.
 - The scatter points on the trend chart are what each poll *measured* — the bloc
-  where R+ wasn't offered (or wasn't yet real), PiS-only where it was. PiS points
-  therefore sit above the PiS line after the launch date. That gap is real
-  disagreement between houses, not a bug.
-- PiS's line steps down ~7pp at the launch date, from the bloc to
-  `bloc × (1 − share)`. That is the party splitting, not an artefact.
-- Stage 2 is intercept-only until there are enough splitting polls, so R+'s line
-  tracks the bloc rather than having its own trajectory. A linear time term
-  switches on automatically at `SPLIT_TREND_MIN_POLLS` / `SPLIT_TREND_MIN_SPAN_YEARS`.
+  where the splinter wasn't offered (or wasn't yet real), parent-only where it
+  was. Parent points therefore sit above the parent's line while houses disagree.
+  That gap is real disagreement, not a bug.
+- A parent's line steps down at its launch date, from the bloc to
+  `bloc × (1 − share)` (~7pp for PiS). That is the party splitting, not an
+  artefact.
+- **Stage-2 spec is chosen automatically** by `SPLIT_RICH_MIN_POLLS` (30) and
+  `SPLIT_RICH_MIN_SPAN_YEARS` (0.75). Sparse → intercept-only, so the splinter's
+  line tracks its bloc rather than having its own trajectory. Rich → the same
+  `s(time, k = 8, bs = "cs")` + `(1 | pollster)` as stage 1. There is no linear
+  tier in between because `bs = "cs"` shrinks toward flat by itself where the
+  data don't support wiggle. KKP needed the rich spec: its share of the bloc rose
+  from 0.25 to 0.42 over its first year, and a flat share is wrong at both ends.
+- Rich stage-2 predictions average over the houses that split the bloc, for the
+  same reason `consensus_epred` does — see `split_share_draws()`.
 
 ## Modelling conventions
 
@@ -97,6 +117,10 @@ Consequences to keep in mind:
 - Time is in **years** (`interval(...) / years(1)`, so 365.25 days). The trend
   chart reconstructs dates as `time * 365`, which is lossy — gate on `time`, not
   the reconstructed `date`, when consistency with the model matters.
+- Poll rows should sum to ~100 once `DK` and `Other` are included; the scraper
+  prints the range as a check. They didn't while the KKP cell was routed into
+  `Other` for early polls, which pushed early-2025 totals to 113–115% and then
+  diluted every party by ~13% once the rows were normalised.
 
 ## Party names
 

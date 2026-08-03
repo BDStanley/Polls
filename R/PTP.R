@@ -43,15 +43,17 @@ PARTY_COLS <- c(
 # Everything in PARTY_COLS except the "Other" residual, i.e. the parties that
 # are modelled, plotted and allocated seats.
 PARTY_COLS_MODEL <- setdiff(PARTY_COLS, "Other")
-# Stage 1 models the PiS + R+ bloc as a single Dirichlet category, so R+ is not
-# a column of the stage-1 outcome matrix; stage 2 splits the bloc afterwards.
-# See the two-stage block below for why.
-PARTY_COLS_BLOC <- setdiff(PARTY_COLS, "Rplus")
+# Splinter parties are not stage-1 Dirichlet categories: stage 1 models each
+# parent + splinter bloc as one category and stage 2 splits it afterwards, so
+# neither splinter is a column of the stage-1 outcome matrix. See the two-stage
+# block below for why.
+PARTY_COLS_BLOC <- setdiff(PARTY_COLS, c("Rplus", "KKP"))
 PARTY_COLS_BLOC_MODEL <- setdiff(PARTY_COLS_BLOC, "Other")
 PARTY_COLORS <- c(
   "PiS" = "blue",
-  # The stage-1 bloc, as labelled on the house-effects plot.
+  # The stage-1 blocs, as labelled on the house-effects plot.
   "PiS + R+" = "blue",
+  "Konfederacja + KKP" = "midnightblue",
   # Rozwój Plus, the centre-right breakaway from PiS. Colour as used for the
   # party in the Wikipedia polling table this project scrapes.
   "R+" = "#4399d3",
@@ -331,7 +333,8 @@ polls <- polls_cleaned %>%
     all_of(PARTY_COLS_MODEL),
     Other,
     DK,
-    rplus_separate
+    rplus_separate,
+    kkp_separate
   ) %>%
   mutate(
     org = as.factor(org),
@@ -363,80 +366,114 @@ polls <- polls %>%
     ~ as.numeric(str_remove(as.character(.x), "%")) / 100
   ))
 
-#####Two-stage treatment of the PiS / R+ split#####
-# Only a few houses offer R+ as a separate option; the rest still read out a
-# single PiS figure that contains R+'s voters. Coding the latter as "R+ = 0"
-# would hand the Dirichlet ~200 observations of a near-zero proportion, and
-# their log-likelihood contribution — (phi * mu - 1) * log(y), with
-# log(0.0005) = -7.6 against log(0.07) = -2.7 for a real reading — swamps the
-# handful of genuine ones and pins R+ to the floor whatever the smooth does.
+#####Two-stage treatment of party splits#####
+# Two splinter parties have broken away during the series: R+ from PiS, and KKP
+# from Konfederacja. In both cases houses did not all start splitting the parent
+# at once, so the raw series mixes two different quantities under the parent's
+# name — some polls report the parent alone, others the parent plus the
+# splinter.
 #
-# So the polls are made comparable instead. Every poll measures the PiS + R+
-# bloc, which is what stage 1 models on the full series; the share of that bloc
-# going to R+ is estimated in stage 2 from the polls that actually split it,
-# and the two are recombined draw-by-draw in split_rplus() below.
-polls <- polls %>%
-  mutate(
-    bloc = PiS + Rplus,
-    # Share of the bloc a poll assigns to R+; NA where R+ was not offered.
-    # Clamped off the boundaries because the Beta likelihood in stage 2 needs
-    # the response strictly inside (0, 1).
-    rplus_share_obs = if_else(
-      rplus_separate & bloc > 0,
-      pmin(pmax(Rplus / bloc, 1e-4), 1 - 1e-4),
-      NA_real_
+# Coding "the splinter was not offered" as "the splinter scored 0" would hand
+# the Dirichlet a mass of near-zero observations, and their log-likelihood
+# contribution — (phi * mu - 1) * log(y), with log(0.0005) = -7.6 against
+# log(0.07) = -2.7 for a real reading — swamps the genuine ones and pins the
+# splinter to the floor whatever the smooth does.
+#
+# So the polls are made comparable instead. Every poll measures the parent +
+# splinter bloc, which is what stage 1 models on the full series; the share of
+# that bloc going to the splinter is estimated in stage 2 from the polls that
+# actually split it; and the two are recombined draw-by-draw in split_all().
+#
+# `launch` is the date the splinter became a real party. It is a fact about the
+# party system, not something to infer from when pollsters started asking, so it
+# is set here rather than derived from the data — some houses offered each
+# splinter before it existed, and those readings measure *potential* support for
+# a hypothetical party, not a vote share. Before `launch` the split is not
+# applied at all: the splinter is 0 and the parent holds the whole bloc.
+SPLIT_SPECS <- list(
+  # ~40 PiS MPs led by Morawiecki, ejected from the party, formed R+.
+  list(
+    child = "Rplus",
+    parent = "PiS",
+    label = "R+",
+    flag = "rplus_separate",
+    launch = as.Date("2026-07-24")
+  ),
+  # Braun's Konfederacja Korony Polskiej left the Konfederacja coalition after
+  # his showing in the May 2025 presidential election; from 9 June 2025 houses
+  # polled it separately as a matter of course.
+  list(
+    child = "KKP",
+    parent = "Konfederacja",
+    label = "KKP",
+    flag = "kkp_separate",
+    launch = as.Date("2025-06-09")
+  )
+)
+
+SPLIT_SPECS <- lapply(SPLIT_SPECS, function(spec) {
+  spec$launch_time <- interval(min(polls$midDate), spec$launch) / years(1)
+  spec$share_col <- paste0(spec$child, "_share_obs")
+  spec
+})
+
+# Observed share of each bloc on the poll's own reading, NA where the splinter
+# was not offered as a separate option. Clamped off the boundaries because the
+# Beta likelihood in stage 2 needs the response strictly inside (0, 1).
+for (spec in SPLIT_SPECS) {
+  bloc <- polls[[spec$parent]] + polls[[spec$child]]
+  polls[[spec$share_col]] <- if_else(
+    polls[[spec$flag]] & bloc > 0,
+    pmin(pmax(polls[[spec$child]] / bloc, 1e-4), 1 - 1e-4),
+    NA_real_
+  )
+  # Fold the splinter back into its parent so every poll in the stage-1 model
+  # measures the same quantity.
+  polls[[spec$parent]] <- bloc
+}
+
+# Pre-launch readings are kept for stage 2: they measure how the parent's
+# electorate divides, which is the quantity stage 2 wants, and for a young split
+# dropping them can leave the share resting on a single day's fieldwork. The
+# flag records the distinction so it stays visible.
+split_data <- lapply(SPLIT_SPECS, function(spec) {
+  dat <- polls %>%
+    filter(!is.na(.data[[spec$share_col]])) %>%
+    transmute(
+      midDate,
+      org,
+      pollster,
+      time,
+      hypothetical = midDate < spec$launch,
+      share = .data[[spec$share_col]]
     )
-  )
 
-# R+ became a real party on 24 July 2026, when the ~40 PiS MPs led by
-# Morawiecki who had been ejected from the party formed one. Houses that offered
-# R+ before that date were measuring *potential* support for a hypothetical
-# party, not support for one standing in the field, so the projection shows no
-# R+ at all before this date — a hypothetical readout is not a vote share.
-#
-# It is a fixed fact about the party system, not something to infer from when
-# pollsters happened to start asking, so it is set here rather than derived from
-# the data. Update it only if the founding date itself is wrong.
-RPLUS_LAUNCH_DATE <- as.Date("2026-07-24")
-RPLUS_LAUNCH_TIME <- interval(min(polls$midDate), RPLUS_LAUNCH_DATE) / years(1)
-
-# The hypothetical readings *are* kept for stage 2: they measure how the
-# centre-right electorate divides, which is the quantity stage 2 wants, and
-# with this few polls dropping them would leave the share resting on a single
-# day's fieldwork. The flag records the distinction so it stays visible — note
-# that if the time trend below ever switches on, these sit at earlier times and
-# would pull its slope, so revisit them then.
-rplus_split_polls <- polls %>%
-  filter(!is.na(rplus_share_obs)) %>%
-  mutate(hypothetical = midDate < RPLUS_LAUNCH_DATE) %>%
-  select(
-    midDate,
-    org,
-    pollster,
-    time,
-    hypothetical,
-    rplus_share = rplus_share_obs
-  )
-
-if (nrow(rplus_split_polls) < 2) {
-  stop(
-    "Fewer than two polls report R+ separately from PiS, so its share of the ",
-    "bloc cannot be estimated. Check that the scraper is still picking up the ",
-    "R+ column (poll_data_scraper.R, rplus_separate)."
-  )
-}
-
-if (!any(rplus_split_polls$midDate >= RPLUS_LAUNCH_DATE)) {
-  warning(
-    "No poll has split PiS and R+ since RPLUS_LAUNCH_DATE (",
-    as.character(RPLUS_LAUNCH_DATE),
-    "), so R+'s share rests entirely on pre-launch hypothetical readings."
-  )
-}
-
-# Fold R+ back into PiS so every poll in the stage-1 model measures the same
-# quantity.
-polls <- polls %>% mutate(PiS = bloc)
+  if (nrow(dat) < 2) {
+    stop(
+      "Fewer than two polls report ",
+      spec$label,
+      " separately from ",
+      spec$parent,
+      ", so its share of the bloc cannot be estimated. Check that the scraper ",
+      "is still picking up the column (poll_data_scraper.R, ",
+      spec$flag,
+      ")."
+    )
+  }
+  if (!any(!dat$hypothetical)) {
+    warning(
+      "No poll has split ",
+      spec$parent,
+      " and ",
+      spec$label,
+      " since its launch date (",
+      as.character(spec$launch),
+      "), so the share rests entirely on pre-launch hypothetical readings."
+    )
+  }
+  dat
+})
+names(split_data) <- vapply(SPLIT_SPECS, `[[`, character(1), "child")
 
 # Calculate Other and check totals
 # Clamp Other to TINY_CONSTANT so it is always present in the model;
@@ -454,27 +491,28 @@ polls <- polls %>%
 polls <- apply_threshold_and_normalize(polls, PARTY_COLS_BLOC)
 
 # What each poll actually measured, on the same normalised scale as the model.
-# These are the scatter points on the trend chart, so it never invents an R+
-# reading for a poll that did not take one.
+# These are the scatter points on the trend chart, so it never invents a
+# splinter reading for a poll that did not take one.
 #
 # A pre-launch poll's split was hypothetical, so the only vote share it measured
-# is the bloc: PiS takes all of it and R+ gets no point. Plotting those two
-# readings as R+ support would put dots on the chart for a party that did not
-# yet exist — they belong in the share estimate, not in the vote-share series.
-polls <- polls %>%
-  mutate(
-    rplus_share_measured = if_else(
-      midDate < RPLUS_LAUNCH_DATE,
-      NA_real_,
-      rplus_share_obs
-    ),
-    PiS_reported = PiS * (1 - coalesce(rplus_share_measured, 0)),
-    Rplus_reported = if_else(
-      is.na(rplus_share_measured),
-      NA_real_,
-      PiS * rplus_share_measured
-    )
+# is the bloc: the parent takes all of it and the splinter gets no point.
+# Plotting those readings as splinter support would put dots on the chart for a
+# party that did not yet exist — they belong in the share estimate, not in the
+# vote-share series.
+for (spec in SPLIT_SPECS) {
+  share_measured <- if_else(
+    polls$midDate < spec$launch,
+    NA_real_,
+    polls[[spec$share_col]]
   )
+  polls[[paste0(spec$parent, "_reported")]] <- polls[[spec$parent]] *
+    (1 - coalesce(share_measured, 0))
+  polls[[paste0(spec$child, "_reported")]] <- if_else(
+    is.na(share_measured),
+    NA_real_,
+    polls[[spec$parent]] * share_measured
+  )
+}
 
 # Filter to include only polls after June 10th, 2025
 #polls <- polls %>%
@@ -575,9 +613,6 @@ m1 <- brm(
     prior(normal(0, 1.5), class = "Intercept", dpar = "muKonfederacja") +
     prior(exponential(3), class = "sd", dpar = "muKonfederacja") +
     prior(exponential(3), class = "sds", dpar = "muKonfederacja") +
-    prior(normal(0, 1.5), class = "Intercept", dpar = "muKKP") +
-    prior(exponential(3), class = "sd", dpar = "muKKP") +
-    prior(exponential(3), class = "sds", dpar = "muKKP") +
     prior(gamma(2, 0.1), class = "phi"),
   data = polls,
   seed = 780045,
@@ -591,98 +626,191 @@ m1 <- brm(
   control = list(adapt_delta = .99, max_treedepth = 17)
 )
 
-#####Run model: stage 2, R+'s share of the PiS + R+ bloc#####
-# Beta likelihood on the observed share. Its dispersion absorbs the
-# house-to-house disagreement — Pollster read R+ at 4.9% on the same day IBRiS
-# read 8.2% — which too few polls can identify as a house effect, so the
-# uncertainty lands in the interval rather than being asserted away.
+#####Run model: stage 2, each splinter's share of its bloc#####
+# Beta likelihood on the observed share. Its dispersion absorbs house-to-house
+# disagreement about the split — Pollster read R+ at 4.9% on the same day IBRiS
+# read 8.2% — so that uncertainty lands in the interval rather than being
+# asserted away.
 #
 # normal(-2, 1.5) on the intercept puts the prior median share at 12% with a
 # 95% range of roughly 1% to 65%: weakly informative about how much of a parent
-# bloc a breakaway takes, without asserting the answer. A time trend is noise
-# until the split has been polled widely enough, so it is only added once it
-# has been.
-SPLIT_TREND_MIN_POLLS <- 12
-SPLIT_TREND_MIN_SPAN_YEARS <- 0.5
+# bloc a breakaway takes, without asserting the answer.
+#
+# Two specifications, chosen by how much splitting data exists:
+#
+#   sparse — intercept-only. A young split has too few polls to identify either
+#            a trajectory or a house effect, so the share is a constant with an
+#            honest interval and the splinter's line tracks its bloc.
+#   rich   — the same smooth and house structure as stage 1. Once a split has
+#            been polled for a while the share moves (KKP's share of the
+#            Konfederacja bloc roughly doubled over its first year) and houses
+#            disagree about it, and both need modelling. bs = "cs" shrinks the
+#            smooth toward flat by itself wherever the data do not support
+#            wiggle, so there is no need for a linear tier in between.
+SPLIT_RICH_MIN_POLLS <- 30
+SPLIT_RICH_MIN_SPAN_YEARS <- 0.75
 
-split_has_trend <- nrow(rplus_split_polls) >= SPLIT_TREND_MIN_POLLS &&
-  diff(range(rplus_split_polls$time)) >= SPLIT_TREND_MIN_SPAN_YEARS
+fit_split_model <- function(dat, spec) {
+  rich <- nrow(dat) >= SPLIT_RICH_MIN_POLLS &&
+    diff(range(dat$time)) >= SPLIT_RICH_MIN_SPAN_YEARS
 
-split_prior <- prior(normal(-2, 1.5), class = "Intercept") +
-  prior(gamma(2, 0.1), class = "phi")
-if (split_has_trend) {
-  split_prior <- split_prior + prior(normal(0, 0.5), class = "b")
+  if (rich) {
+    form <- bf(share ~ 1 + s(time, k = 8, bs = "cs", m = 2) + (1 | pollster))
+    pri <- prior(normal(-2, 1.5), class = "Intercept") +
+      prior(exponential(3), class = "sd") +
+      prior(exponential(3), class = "sds") +
+      prior(gamma(2, 0.1), class = "phi")
+  } else {
+    form <- bf(share ~ 1)
+    pri <- prior(normal(-2, 1.5), class = "Intercept") +
+      prior(gamma(2, 0.1), class = "phi")
+  }
+
+  cat(sprintf(
+    "%s share of the %s bloc: %d polls (%d pre-launch), %s to %s, fitted %s\n",
+    spec$label,
+    spec$parent,
+    nrow(dat),
+    sum(dat$hypothetical),
+    as.character(min(dat$midDate)),
+    as.character(max(dat$midDate)),
+    if (rich) "with a time smooth and house effects" else "intercept-only"
+  ))
+
+  fit <- brm(
+    formula = form,
+    family = Beta(link = "logit"),
+    prior = pri,
+    data = dat,
+    seed = 780045,
+    iter = 3000,
+    warmup = 2000,
+    backend = "cmdstanr",
+    chains = n_chains,
+    cores = n_chains,
+    refresh = 0,
+    control = list(adapt_delta = .99, max_treedepth = 15)
+  )
+
+  list(
+    fit = fit,
+    rich = rich,
+    spec = spec,
+    pollsters = sort(unique(dat$pollster))
+  )
 }
 
-cat(sprintf(
-  "R+ share of the PiS bloc: %d polls, %s to %s, fitted %s\n",
-  nrow(rplus_split_polls),
-  as.character(min(rplus_split_polls$midDate)),
-  as.character(max(rplus_split_polls$midDate)),
-  if (split_has_trend) "with a linear time trend" else "intercept-only"
-))
+split_models <- lapply(SPLIT_SPECS, function(spec) {
+  fit_split_model(split_data[[spec$child]], spec)
+})
+names(split_models) <- names(split_data)
 
-m_split <- brm(
-  formula = if (split_has_trend) {
-    bf(rplus_share ~ 1 + time)
+# Posterior draws of a bloc share at the given times, as a long tibble of
+# (time, .split_draw, .share).
+#
+# For a rich model this averages over the houses that actually split the bloc,
+# for the same reason consensus_epred does it for stage 1: re_formula = NA would
+# return the population hyper-mean, whose between-house/sqrt(n) uncertainty does
+# not shrink as polls arrive. n_use caps how many stage-2 draws are drawn on —
+# there is no point carrying more than stage 1 has to pair them with, and the
+# house crossing makes the intermediate wide.
+split_share_draws <- function(entry, times, n_use) {
+  nd <- tibble(time = times)
+  n_avail <- ndraws(entry$fit)
+  ids <- unique(round(seq(1, n_avail, length.out = min(n_avail, n_use))))
+
+  if (entry$rich) {
+    nd <- crossing(nd, pollster = entry$pollsters)
+    ep <- posterior_epred(
+      entry$fit,
+      newdata = nd,
+      re_formula = NULL,
+      draw_ids = ids
+    )
+    # Average the houses within each draw, giving [draw x time].
+    key <- factor(nd$time, levels = times)
+    mat <- vapply(
+      levels(key),
+      function(lv) rowMeans(ep[, key == lv, drop = FALSE]),
+      numeric(nrow(ep))
+    )
   } else {
-    bf(rplus_share ~ 1)
-  },
-  family = Beta(link = "logit"),
-  prior = split_prior,
-  data = rplus_split_polls,
-  seed = 780045,
-  iter = 3000,
-  warmup = 2000,
-  backend = "cmdstanr",
-  chains = n_chains,
-  cores = n_chains,
-  refresh = 0,
-  control = list(adapt_delta = .99, max_treedepth = 15)
-)
+    mat <- posterior_epred(
+      entry$fit,
+      newdata = nd,
+      re_formula = NA,
+      draw_ids = ids
+    )
+  }
 
-# Recombine the two stages: replace the bloc's "PiS" category with PiS and
-# Rplus, scaled by the stage-2 share. Doing it on the draws keeps stage 2's
-# uncertainty in every downstream interval and seat simulation.
+  tibble(
+    time = rep(times, each = nrow(mat)),
+    .split_draw = rep(seq_len(nrow(mat)), times = length(times)),
+    .share = as.vector(mat)
+  )
+}
+
+# Recombine the two stages: replace a bloc category with parent and splinter,
+# scaled by the stage-2 share. Doing it on the draws keeps stage 2's uncertainty
+# in every downstream interval and seat simulation.
 #
 # The two posteriors are independent, so any fixed pairing of their draws
 # samples the joint correctly. Pairing on the stage-1 draw id modulo the number
 # of stage-2 draws is deterministic and uses every stage-2 draw equally often —
 # and, unlike resampling, returns the same answer on every call, which matters
 # because the house-effects block joins draws across two separate predictions.
-split_rplus <- function(draws) {
-  share_draws <- draws %>%
-    ungroup() %>%
-    distinct(time) %>%
-    add_epred_draws(object = m_split, newdata = ., re_formula = NA) %>%
-    ungroup() %>%
-    select(time, .split_draw = .draw, .share = .epred)
-
-  split_ids <- sort(unique(share_draws$.split_draw))
+split_bloc <- function(draws, entry) {
+  spec <- entry$spec
 
   bloc <- draws %>%
     ungroup() %>%
-    filter(as.character(.category) == "PiS") %>%
-    mutate(.split_draw = split_ids[((.draw - 1) %% length(split_ids)) + 1]) %>%
-    left_join(share_draws, by = c("time", ".split_draw")) %>%
-    # Before R+ was founded there is no split to apply: the bloc is PiS, and R+
-    # is a party that did not yet exist to be voted for.
-    mutate(.share = if_else(time < RPLUS_LAUNCH_TIME, 0, .share)) %>%
-    select(-.split_draw)
+    filter(as.character(.category) == spec$parent)
+
+  # Only times at or after the launch date need a share; before it the splinter
+  # did not exist to be voted for, and asking the smooth to extrapolate back
+  # there would be meaningless as well as wasteful.
+  times <- sort(unique(bloc$time[bloc$time >= spec$launch_time]))
+
+  if (length(times) > 0) {
+    share_draws <- split_share_draws(
+      entry,
+      times,
+      n_use = n_distinct(bloc$.draw)
+    )
+    split_ids <- sort(unique(share_draws$.split_draw))
+    bloc <- bloc %>%
+      mutate(
+        .split_draw = split_ids[((.draw - 1) %% length(split_ids)) + 1]
+      ) %>%
+      left_join(share_draws, by = c("time", ".split_draw")) %>%
+      select(-.split_draw)
+  } else {
+    bloc <- bloc %>% mutate(.share = NA_real_)
+  }
+
+  bloc <- bloc %>%
+    mutate(.share = if_else(time < spec$launch_time | is.na(.share), 0, .share))
 
   draws %>%
     ungroup() %>%
-    filter(as.character(.category) != "PiS") %>%
+    filter(as.character(.category) != spec$parent) %>%
     mutate(.category = as.character(.category)) %>%
     bind_rows(
       bloc %>%
-        mutate(.category = "PiS", .epred = .epred * (1 - .share)) %>%
+        mutate(.category = spec$parent, .epred = .epred * (1 - .share)) %>%
         select(-.share),
       bloc %>%
-        mutate(.category = "Rplus", .epred = .epred * .share) %>%
+        mutate(.category = spec$child, .epred = .epred * .share) %>%
         select(-.share)
-    ) %>%
-    mutate(.category = factor(.category, levels = PARTY_COLS))
+    )
+}
+
+# Apply every split. The parents are distinct, so the order does not matter.
+split_all <- function(draws) {
+  for (entry in split_models) {
+    draws <- split_bloc(draws, entry)
+  }
+  draws %>% mutate(.category = factor(.category, levels = PARTY_COLS))
 }
 
 # Consensus prediction: the trend averaged over the pollster houses we actually
@@ -696,10 +824,10 @@ split_rplus <- function(draws) {
 # is the estimand a poll-of-polls chart should show. Column layout matches
 # add_epred_draws: newdata columns + .category + .draw + .epred.
 #
-# split = FALSE returns the stage-1 categories as fitted, with PiS still the
-# whole bloc. The house-effects block wants that: with a share estimated from
-# one handful of polls and no house term, splitting there would only rescale
-# the bloc's house effect and report it twice under two party labels.
+# split = FALSE returns the stage-1 categories as fitted, with each parent still
+# holding its whole bloc. The house-effects block wants that: a house's reading
+# of the bloc is the thing every house actually measures over the whole series,
+# so it is the level at which they can be compared.
 consensus_epred <- function(object, newdata, ..., split = TRUE) {
   pollsters <- sort(unique(polls$pollster))
   newdata <- newdata %>% mutate(.obs = row_number())
@@ -715,11 +843,11 @@ consensus_epred <- function(object, newdata, ..., split = TRUE) {
     summarise(.epred = mean(.epred), .groups = "drop")
 
   if (split) {
-    out <- split_rplus(out)
+    out <- split_all(out)
   }
 
   out %>%
-    # split_rplus appends rows, so restore the ordering summarise() produced:
+    # split_all appends rows, so restore the ordering summarise() produced:
     # downstream blocks renumber draws with row_number() within .category and
     # then pivot wide, which only pairs categories correctly if every category
     # lists its rows in the same (.obs, .draw) order.
@@ -765,8 +893,9 @@ pollster_effects <- expand_grid(
   left_join(avg_trend, by = ".category") %>%
   mutate(
     house_effect_pp = (pollster_support - avg_support) * 100,
-    # Stage 1 categories: PiS here is the PiS + R+ bloc, which is the level
-    # every house actually reads out, so house effects are measured on it.
+    # Stage 1 categories: PiS is the PiS + R+ bloc and Konfederacja the
+    # Konfederacja + KKP bloc, which is what every house reads out across the
+    # whole series, so house effects are measured on them.
     .category = factor(
       .category,
       levels = c(
@@ -777,7 +906,6 @@ pollster_effects <- expand_grid(
         "Lewica",
         "Razem",
         "Konfederacja",
-        "KKP",
         "Other"
       ),
       labels = c(
@@ -787,8 +915,7 @@ pollster_effects <- expand_grid(
         "PSL",
         "Lewica",
         "Razem",
-        "Konfederacja",
-        "KKP",
+        "Konfederacja + KKP",
         "Other"
       )
     )
@@ -817,8 +944,9 @@ house_effects_data <- pollster_effects_draws %>%
   left_join(avg_trend_draws, by = c(".draw", ".category")) %>%
   mutate(
     house_effect_pp = (.epred - avg_epred) * 100,
-    # Stage 1 categories: PiS here is the PiS + R+ bloc, which is the level
-    # every house actually reads out, so house effects are measured on it.
+    # Stage 1 categories: PiS is the PiS + R+ bloc and Konfederacja the
+    # Konfederacja + KKP bloc, which is what every house reads out across the
+    # whole series, so house effects are measured on them.
     .category = factor(
       .category,
       levels = c(
@@ -829,7 +957,6 @@ house_effects_data <- pollster_effects_draws %>%
         "Lewica",
         "Razem",
         "Konfederacja",
-        "KKP",
         "Other"
       ),
       labels = c(
@@ -839,8 +966,7 @@ house_effects_data <- pollster_effects_draws %>%
         "PSL",
         "Lewica",
         "Razem",
-        "Konfederacja",
-        "KKP",
+        "Konfederacja + KKP",
         "Other"
       )
     )
@@ -896,7 +1022,7 @@ house_effects_plot <- house_effects_data %>%
     x = "House effect (percentage points)",
     y = "",
     title = "Polling house effects by party",
-    subtitle = "Systematic deviations from the average trend for each pollster.\nPiS and R+ are shown as one bloc: too few polls split them to identify a house effect for each.",
+    subtitle = "Systematic deviations from the average trend for each pollster.\nPiS/R+ and Konfederacja/KKP are each shown as one bloc, the level every house has read out across the whole series.",
     caption = "Positive values indicate the pollster tends to show higher support for that party"
   ) +
   theme_plots() +
@@ -961,19 +1087,28 @@ pred_dta <- tibble(
       )
     )
   ) %>%
-  filter(party != "Other") %>% # Exclude "Other" from plot
-  # No R+ line before the party was founded: until then the bloc is PiS and
-  # there is nothing to plot. Cut on time, the same quantity split_rplus()
-  # gates on, so the line can never open on a zero — date is a lossy 365-day
-  # reconstruction of it.
-  filter(!(party == "R+" & time < RPLUS_LAUNCH_TIME))
+  filter(party != "Other") # Exclude "Other" from plot
 
-# Scatter points are what each poll reported: PiS as that house read it out
-# (the whole bloc where R+ was not offered) and R+ only where it was. Points
-# for PiS therefore sit above the PiS line once some houses start splitting the
-# bloc and others do not — that gap is the disagreement, not an artefact.
-point_dta <- polls %>%
-  mutate(PiS = PiS_reported, Rplus = Rplus_reported) %>%
+# No splinter line before its party was founded: until then the bloc belongs
+# entirely to the parent and there is nothing to plot. Cut on time, the same
+# quantity split_bloc() gates on, so a line can never open on a zero — date is
+# a lossy 365-day reconstruction of it.
+for (spec in SPLIT_SPECS) {
+  pred_dta <- pred_dta %>%
+    filter(!(party == spec$label & time < spec$launch_time))
+}
+
+# Scatter points are what each poll measured: the parent as that house read it
+# out (the whole bloc where the splinter was not offered) and the splinter only
+# where it was. Parent points therefore sit above the parent's line while some
+# houses split the bloc and others do not — that gap is the disagreement, not
+# an artefact.
+point_dta <- polls
+for (spec in SPLIT_SPECS) {
+  point_dta[[spec$parent]] <- point_dta[[paste0(spec$parent, "_reported")]]
+  point_dta[[spec$child]] <- point_dta[[paste0(spec$child, "_reported")]]
+}
+point_dta <- point_dta %>%
   select(midDate, org, all_of(PARTY_COLS)) %>%
   pivot_longer(
     cols = -c(midDate, org),
