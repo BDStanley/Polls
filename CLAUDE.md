@@ -53,16 +53,28 @@ Consequences to keep in mind:
 
 - `rplus_separate` (set in the scraper) is what distinguishes "R+ wasn't offered"
   from "R+ scored zero". Never let those collapse again.
-- Before `RPLUS_FIRST_DATE`, the split is not applied: R+ is 0 and PiS is the
-  whole bloc. That is correct — the party wasn't polled — and the trend chart
-  drops R+ rows from that period rather than drawing a line at zero.
+- **`RPLUS_LAUNCH_DATE` (2026-07-24) is the date R+ was founded**, hardcoded on
+  purpose. It is a fact about the party system, not something to infer from when
+  pollsters started asking — some houses offered R+ months earlier, and those
+  readings measured *potential* support for a hypothetical party. Before this
+  date the split is not applied at all: R+ is 0 and PiS is the whole bloc.
+- Those pre-launch hypothetical readings are still used by **stage 2** — they
+  measure how the centre-right electorate divides, which is what stage 2 wants —
+  but not by the chart: the trend line starts at the launch date, and their
+  scatter points show only the bloc as PiS, with no R+ point. The
+  `hypothetical` flag on `rplus_split_polls` marks them. If the stage-2 time
+  trend ever switches on, revisit this: they sit at earlier times and would pull
+  its slope.
 - **House effects are reported on the unsplit bloc**, labelled `PiS + R+`. The
   two `consensus_epred(..., split = FALSE)` calls in that block are deliberate:
   stage 2 has no house term, so splitting there would just rescale the bloc's
   house effect and print it twice.
-- The scatter points on the trend chart are what each poll *reported* — the bloc
-  where R+ wasn't offered, PiS-only where it was. PiS points therefore sit above
-  the PiS line. That gap is real disagreement between houses, not a bug.
+- The scatter points on the trend chart are what each poll *measured* — the bloc
+  where R+ wasn't offered (or wasn't yet real), PiS-only where it was. PiS points
+  therefore sit above the PiS line after the launch date. That gap is real
+  disagreement between houses, not a bug.
+- PiS's line steps down ~7pp at the launch date, from the bloc to
+  `bloc × (1 − share)`. That is the party splitting, not an artefact.
 - Stage 2 is intercept-only until there are enough splitting polls, so R+'s line
   tracks the bloc rather than having its own trajectory. A linear time term
   switches on automatically at `SPLIT_TREND_MIN_POLLS` / `SPLIT_TREND_MIN_SPAN_YEARS`.

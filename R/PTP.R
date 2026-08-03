@@ -388,9 +388,35 @@ polls <- polls %>%
     )
   )
 
+# R+ became a real party on 24 July 2026, when the ~40 PiS MPs led by
+# Morawiecki who had been ejected from the party formed one. Houses that offered
+# R+ before that date were measuring *potential* support for a hypothetical
+# party, not support for one standing in the field, so the projection shows no
+# R+ at all before this date — a hypothetical readout is not a vote share.
+#
+# It is a fixed fact about the party system, not something to infer from when
+# pollsters happened to start asking, so it is set here rather than derived from
+# the data. Update it only if the founding date itself is wrong.
+RPLUS_LAUNCH_DATE <- as.Date("2026-07-24")
+RPLUS_LAUNCH_TIME <- interval(min(polls$midDate), RPLUS_LAUNCH_DATE) / years(1)
+
+# The hypothetical readings *are* kept for stage 2: they measure how the
+# centre-right electorate divides, which is the quantity stage 2 wants, and
+# with this few polls dropping them would leave the share resting on a single
+# day's fieldwork. The flag records the distinction so it stays visible — note
+# that if the time trend below ever switches on, these sit at earlier times and
+# would pull its slope, so revisit them then.
 rplus_split_polls <- polls %>%
   filter(!is.na(rplus_share_obs)) %>%
-  select(midDate, org, pollster, time, rplus_share = rplus_share_obs)
+  mutate(hypothetical = midDate < RPLUS_LAUNCH_DATE) %>%
+  select(
+    midDate,
+    org,
+    pollster,
+    time,
+    hypothetical,
+    rplus_share = rplus_share_obs
+  )
 
 if (nrow(rplus_split_polls) < 2) {
   stop(
@@ -400,10 +426,13 @@ if (nrow(rplus_split_polls) < 2) {
   )
 }
 
-# R+ enters the projection only from the first poll that offered it: before
-# that date the bloc is simply PiS and there is no split to estimate.
-RPLUS_FIRST_DATE <- min(rplus_split_polls$midDate)
-RPLUS_FIRST_TIME <- min(rplus_split_polls$time)
+if (!any(rplus_split_polls$midDate >= RPLUS_LAUNCH_DATE)) {
+  warning(
+    "No poll has split PiS and R+ since RPLUS_LAUNCH_DATE (",
+    as.character(RPLUS_LAUNCH_DATE),
+    "), so R+'s share rests entirely on pre-launch hypothetical readings."
+  )
+}
 
 # Fold R+ back into PiS so every poll in the stage-1 model measures the same
 # quantity.
@@ -424,17 +453,26 @@ polls <- polls %>%
 # Apply threshold fix and normalize
 polls <- apply_threshold_and_normalize(polls, PARTY_COLS_BLOC)
 
-# What each poll actually reported, on the same normalised scale as the model:
-# PiS as that house read it out (the whole bloc where R+ was not offered) and
-# R+ only where it was. These are the scatter points on the trend chart, so the
-# chart never invents an R+ reading for a poll that did not take one.
+# What each poll actually measured, on the same normalised scale as the model.
+# These are the scatter points on the trend chart, so it never invents an R+
+# reading for a poll that did not take one.
+#
+# A pre-launch poll's split was hypothetical, so the only vote share it measured
+# is the bloc: PiS takes all of it and R+ gets no point. Plotting those two
+# readings as R+ support would put dots on the chart for a party that did not
+# yet exist — they belong in the share estimate, not in the vote-share series.
 polls <- polls %>%
   mutate(
-    PiS_reported = PiS * (1 - coalesce(rplus_share_obs, 0)),
-    Rplus_reported = if_else(
-      is.na(rplus_share_obs),
+    rplus_share_measured = if_else(
+      midDate < RPLUS_LAUNCH_DATE,
       NA_real_,
-      PiS * rplus_share_obs
+      rplus_share_obs
+    ),
+    PiS_reported = PiS * (1 - coalesce(rplus_share_measured, 0)),
+    Rplus_reported = if_else(
+      is.na(rplus_share_measured),
+      NA_real_,
+      PiS * rplus_share_measured
     )
   )
 
@@ -627,9 +665,9 @@ split_rplus <- function(draws) {
     filter(as.character(.category) == "PiS") %>%
     mutate(.split_draw = split_ids[((.draw - 1) %% length(split_ids)) + 1]) %>%
     left_join(share_draws, by = c("time", ".split_draw")) %>%
-    # Before the first poll that offered R+ there is no split to apply: the
-    # bloc is PiS, and R+ is a party no one was asked about.
-    mutate(.share = if_else(time < RPLUS_FIRST_TIME, 0, .share)) %>%
+    # Before R+ was founded there is no split to apply: the bloc is PiS, and R+
+    # is a party that did not yet exist to be voted for.
+    mutate(.share = if_else(time < RPLUS_LAUNCH_TIME, 0, .share)) %>%
     select(-.split_draw)
 
   draws %>%
@@ -924,11 +962,11 @@ pred_dta <- tibble(
     )
   ) %>%
   filter(party != "Other") %>% # Exclude "Other" from plot
-  # No R+ line before the first poll that offered R+ as an option: until then
-  # the bloc is PiS and there is nothing to plot. Cut on time, the same
-  # quantity split_rplus() gates on, so the line can never open on a zero —
-  # date is a lossy 365-day reconstruction of it.
-  filter(!(party == "R+" & time < RPLUS_FIRST_TIME))
+  # No R+ line before the party was founded: until then the bloc is PiS and
+  # there is nothing to plot. Cut on time, the same quantity split_rplus()
+  # gates on, so the line can never open on a zero — date is a lossy 365-day
+  # reconstruction of it.
+  filter(!(party == "R+" & time < RPLUS_LAUNCH_TIME))
 
 # Scatter points are what each poll reported: PiS as that house read it out
 # (the whole bloc where R+ was not offered) and R+ only where it was. Points
