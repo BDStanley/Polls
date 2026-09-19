@@ -1,4 +1,10 @@
 #####Prepare workspace#####
+system("git pull")
+
+if (!requireNamespace("pak", quietly = TRUE)) {
+  install.packages("pak", repos = "https://cran.r-project.org")
+}
+
 pkgs <- c(
   "tidyverse",
   "readxl",
